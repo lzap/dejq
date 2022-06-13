@@ -221,7 +221,7 @@ func (c *client) Consume(ctx context.Context) {
 	}
 
 	maxMessages := int32(c.maxMessages)
-	attributeNames := []string{"all"}
+	attributeNames := []string{"All"}
 	for {
 		input := &sqs.ReceiveMessageInput{
 			QueueUrl:              &c.queueURL,
@@ -236,6 +236,7 @@ func (c *client) Consume(ctx context.Context) {
 		}
 
 		for _, m := range output.Messages {
+			c.logger.Log(ctx, log.LogLevelTrace, "received message: "+*m.MessageId, nil)
 			if _, ok := m.MessageAttributes["job_type"]; !ok {
 				//a message will be sent to the DLQ automatically after 4 tries if it is received but not deleted
 				c.logger.Log(ctx, log.LogLevelWarn, "message has no job_type: "+*m.MessageId, nil)
@@ -260,6 +261,7 @@ func (c *client) worker(ctx context.Context, id int, messages <-chan *sqsJob) {
 // fully consumed. If the handler exists, it will wait for the err channel to be processed. Once it receives feedback
 // from the handler in the form of a channel, it will either log the error, or consume the message.
 func (c *client) run(ctx context.Context, m *sqsJob) error {
+	c.logger.Log(ctx, log.LogLevelTrace, "processing message: "+*m.MessageId, nil)
 	if h, ok := c.handlers[m.Type()]; ok {
 		go c.extend(ctx, m)
 		if err := h(ctx, m); err != nil {
