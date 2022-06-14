@@ -29,7 +29,8 @@ func main() {
 		panic(err)
 	}
 	c.RegisterHandler("test_job", func(ctx context.Context, job dejq.Job) error {
-		println("Received a job! Type: ", job.Type())
+		println("Received a job!", job.Type(), job.Attribute("dedup_id"))
+		time.Sleep(1 * time.Minute)
 		return nil
 	})
 
@@ -45,7 +46,7 @@ func main() {
 		panic(err)
 	}
 
-	go c.Consume(context.TODO())
+	go c.Dequeue(context.TODO())
 	time.Sleep(40 * time.Second)
 
 	// job sending can be implemented as goroutines, wait until all is sent

@@ -143,17 +143,22 @@ func generateDeduplicationId() string {
 	return randomBase62(20)[0:22]
 }
 
-func (c *client) Enqueue(ctx context.Context, job_type string, body interface{}) error {
+func (c *client) Enqueue(ctx context.Context, jobType string, body interface{}, extraAttributes ...string) error {
 	bytes, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
 
+	deduplicationId := generateDeduplicationId()
+	attributes := []string{"dedup_id", deduplicationId}
+	if len(extraAttributes) > 0 {
+		attributes = append(attributes, extraAttributes...)
+	}
 	sqsInput := &sqs.SendMessageInput{
 		MessageBody:            aws.String(string(bytes)),
-		MessageAttributes:      defaultSQSAttributes(job_type),
-		MessageGroupId:         aws.String(job_type),
-		MessageDeduplicationId: aws.String(generateDeduplicationId()),
+		MessageAttributes:      defaultSQSAttributes(jobType, attributes...),
+		MessageGroupId:         aws.String(jobType),
+		MessageDeduplicationId: aws.String(deduplicationId),
 		QueueUrl:               aws.String(c.queueURL),
 	}
 
@@ -194,30 +199,40 @@ func (c *client) sendDirectMessage(ctx context.Context, input *sqs.SendMessageIn
 	}
 }
 
-func defaultSQSAttributes(jobType string) map[string]types.MessageAttributeValue {
-	return map[string]types.MessageAttributeValue{
-		"job_type": types.MessageAttributeValue{DataType: aws.String("String"), StringValue: &jobType},
+func defaultSQSAttributes(jobType string, extra ...string) map[string]types.MessageAttributeValue {
+	result := map[string]types.MessageAttributeValue{
+		"job_type": {DataType: aws.String("String"), StringValue: &jobType},
 	}
+	for i, key := range extra {
+		if i%2 == 0 {
+			value := extra[i+1]
+			result[key] = types.MessageAttributeValue{
+				DataType:    aws.String("String"),
+				StringValue: &value,
+			}
+		}
+	}
+	return result
 }
 
 func (c *client) Wait() {
 	c.senderWG.Wait()
 }
 
-// Consume polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
+// Dequeue polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
 //
 // A message is not considered dequeued until it has been sucessfully processed and deleted. There is a 30 Second
 // delay between receiving a single message and receiving the same message. This delay can be adjusted in the AWS
 // console and can also be extended during operation. If a message is successfully received 4 times but not deleted,
 // it will be considered unprocessable and sent to the DLQ automatically
 //
-// Consume uses long-polling to check and retrieve messages, if it is unable to make a connection, the aws-SDK will use its
+// Dequeue uses long-polling to check and retrieve messages, if it is unable to make a connection, the aws-SDK will use its
 // advanced retrying mechanism (including exponential backoff), if all of the retries fail, then we will wait 10s before
 // trying again.
 //
 // When a new message is received, it runs in a separate go-routine that will handle the full consuming of the message, error reporting
 // and deleting
-func (c *client) Consume(ctx context.Context) {
+func (c *client) Dequeue(ctx context.Context) {
 	jobs := make(chan *sqsJob)
 	for w := 1; w <= c.workerPool; w++ {
 		go c.worker(ctx, w, jobs)
@@ -245,6 +260,7 @@ func (c *client) Consume(ctx context.Context) {
 				continue
 			}
 
+			c.logger.Log(ctx, log.LogLevelTrace, "enqueued: "+*m.MessageId, nil)
 			jobs <- newJob(&m)
 		}
 	}
@@ -253,6 +269,7 @@ func (c *client) Consume(ctx context.Context) {
 // worker is an always-on concurrent worker that will take tasks when they are added into the messages buffer
 func (c *client) worker(ctx context.Context, id int, messages <-chan *sqsJob) {
 	for m := range messages {
+		c.logger.Log(ctx, log.LogLevelTrace, "dequeued: "+*m.MessageId+" by XXXX"+string(id), nil)
 		if err := c.run(ctx, m); err != nil {
 			c.logger.Log(ctx, log.LogLevelWarn, "error processing message: "+err.Error(), nil)
 		}
@@ -290,24 +307,24 @@ func (c *client) delete(ctx context.Context, m *sqsJob) error {
 }
 
 func (c *client) extend(ctx context.Context, m *sqsJob) {
-	var count int
+	// add extra 10 seconds for HTTP REST processing
+	tick := time.Duration(c.heartbeatSec-10) * time.Second
+	timer := time.NewTimer(tick)
+	count := 0
 	for {
 		if count >= c.maxBeats {
 			c.logger.Log(ctx, log.LogLevelWarn, "exceeded maximum amount of heartbeats", nil)
 			return
 		}
-
 		count++
-		// allow 10 seconds to process the extension request
-		c.logger.Log(ctx, log.LogLevelTrace, "sleeping: "+*m.MessageId, nil)
-		time.Sleep(time.Duration(c.heartbeatSec-10) * time.Second)
-		c.logger.Log(ctx, log.LogLevelTrace, "woke up: "+*m.MessageId, nil)
+
 		select {
 		case <-m.err:
-			c.logger.Log(ctx, log.LogLevelTrace, "worker is done: "+*m.MessageId, nil)
 			// worker is done
+			c.logger.Log(ctx, log.LogLevelTrace, "worker is done: "+*m.MessageId, nil)
+			timer.Stop()
 			return
-		default:
+		case <-timer.C:
 			c.logger.Log(ctx, log.LogLevelTrace, "extending: "+*m.MessageId, nil)
 			input := &sqs.ChangeMessageVisibilityInput{
 				QueueUrl:          &c.queueURL,
@@ -319,6 +336,7 @@ func (c *client) extend(ctx context.Context, m *sqsJob) {
 				c.logger.Log(ctx, log.LogLevelError, "unable to extend message visibility: "+err.Error(), nil)
 				return
 			}
+			timer.Reset(tick)
 		}
 	}
 }
