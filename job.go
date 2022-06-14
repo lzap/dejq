@@ -22,20 +22,20 @@ func newJob(m *types.Message) *sqsJob {
 	return &sqsJob{m, make(chan error, 1)}
 }
 
-func (m *sqsJob) body() []byte {
-	return []byte(*m.Message.Body)
+func (j *sqsJob) body() []byte {
+	return []byte(*j.Message.Body)
 }
 
-func (m *sqsJob) Type() string {
-	return *m.MessageAttributes["type"].StringValue
+func (j *sqsJob) Type() string {
+	return j.Attribute("job_type")
 }
 
-func (m *sqsJob) Decode(out interface{}) error {
-	return json.Unmarshal(m.body(), &out)
+func (j *sqsJob) Decode(out interface{}) error {
+	return json.Unmarshal(j.body(), &out)
 }
 
-func (m *sqsJob) Attribute(key string) string {
-	id, ok := m.MessageAttributes[key]
+func (j *sqsJob) Attribute(key string) string {
+	id, ok := j.MessageAttributes[key]
 	if !ok {
 		return ""
 	}
@@ -45,19 +45,17 @@ func (m *sqsJob) Attribute(key string) string {
 
 // ErrorResponse is used to determine for error handling within the handler. When an error occurs,
 // this function should be returned.
-func (m *sqsJob) ErrorResponse(ctx context.Context, err error) error {
+func (j *sqsJob) ErrorResponse(ctx context.Context, err error) error {
 	go func() {
-		m.err <- err
+		j.err <- err
 	}()
 	return err
 }
 
 // Success is used to determine that a handler was successful in processing the job and the job should
 // now be consumed. This will delete the job from the queue
-func (m *sqsJob) Success(ctx context.Context) error {
+func (j *sqsJob) Success(ctx context.Context) {
 	go func() {
-		m.err <- nil
+		j.err <- nil
 	}()
-
-	return nil
 }

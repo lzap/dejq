@@ -72,7 +72,6 @@ type client struct {
 	maxBeats     int
 	workerPool   int
 	maxMessages  int
-	workerCount  int
 }
 
 func NewPublisher(ctx context.Context, config aws.Config, queueName string, logger log.Logger) (*client, error) {
@@ -100,9 +99,13 @@ func NewConsumer(ctx context.Context, config aws.Config, queueName string, logge
 		return nil, err
 	}
 	// TODO: VisibilityTimeout can be retrieved from queue dynamically (error thrown when < 10 sec)
+	if heartbeatSec <= 10 {
+		return nil, errors.New("heartbeat cannot be shorter than 10 seconds")
+	}
 	client.heartbeatSec = heartbeatSec
 	client.maxBeats = maxBeats
 	client.maxMessages = 10
+	client.workerPool = 3
 	client.handlers = make(map[string]Handler)
 	return client, nil
 }
@@ -236,7 +239,6 @@ func (c *client) Consume(ctx context.Context) {
 		}
 
 		for _, m := range output.Messages {
-			c.logger.Log(ctx, log.LogLevelTrace, "received message: "+*m.MessageId, nil)
 			if _, ok := m.MessageAttributes["job_type"]; !ok {
 				//a message will be sent to the DLQ automatically after 4 tries if it is received but not deleted
 				c.logger.Log(ctx, log.LogLevelWarn, "message has no job_type: "+*m.MessageId, nil)
@@ -267,13 +269,14 @@ func (c *client) run(ctx context.Context, m *sqsJob) error {
 		if err := h(ctx, m); err != nil {
 			return m.ErrorResponse(ctx, err)
 		}
-		return m.Success(ctx)
+		m.Success(ctx)
 	}
 	return c.delete(ctx, m) //MESSAGE CONSUMED
 }
 
 // delete will remove a message from the queue, this is necessary to fully and successfully consume a message.
 func (c *client) delete(ctx context.Context, m *sqsJob) error {
+	c.logger.Log(ctx, log.LogLevelTrace, "deleting message: "+*m.MessageId, nil)
 	input := &sqs.DeleteMessageInput{
 		QueueUrl:      &c.queueURL,
 		ReceiptHandle: m.ReceiptHandle,
@@ -296,12 +299,16 @@ func (c *client) extend(ctx context.Context, m *sqsJob) {
 
 		count++
 		// allow 10 seconds to process the extension request
+		c.logger.Log(ctx, log.LogLevelTrace, "sleeping: "+*m.MessageId, nil)
 		time.Sleep(time.Duration(c.heartbeatSec-10) * time.Second)
+		c.logger.Log(ctx, log.LogLevelTrace, "woke up: "+*m.MessageId, nil)
 		select {
 		case <-m.err:
-			// goroutine finished
+			c.logger.Log(ctx, log.LogLevelTrace, "worker is done: "+*m.MessageId, nil)
+			// worker is done
 			return
 		default:
+			c.logger.Log(ctx, log.LogLevelTrace, "extending: "+*m.MessageId, nil)
 			input := &sqs.ChangeMessageVisibilityInput{
 				QueueUrl:          &c.queueURL,
 				ReceiptHandle:     m.ReceiptHandle,

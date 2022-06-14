@@ -24,7 +24,7 @@ func main() {
 	}
 
 	logger.Log(context.TODO(), log.LogLevelTrace, "starting consumer", nil)
-	c, err := dejq.NewConsumer(context.TODO(), cfg, "lzap-jobs-dev.fifo", logger, 30, 3)
+	c, err := dejq.NewConsumer(context.TODO(), cfg, "lzap-jobs-dev.fifo", logger, 15, 3)
 	if err != nil {
 		panic(err)
 	}
@@ -46,7 +46,7 @@ func main() {
 	}
 
 	go c.Consume(context.TODO())
-	time.Sleep(5 * time.Second)
+	time.Sleep(40 * time.Second)
 
 	// job sending can be implemented as goroutines, wait until all is sent
 	p.Wait()
