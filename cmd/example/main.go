@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
+	stdlog "log"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/go-logr/stdr"
 	"github.com/lzap/dejq"
-	"github.com/lzap/dejq/log"
-	"github.com/lzap/dejq/log/stdoutadapter"
 )
 
 type TestJob struct {
@@ -15,38 +16,37 @@ type TestJob struct {
 }
 
 func main() {
-	logger := stdoutadapter.NewLogger()
+	ctx := context.Background()
+	stdr.SetVerbosity(9)
+	log := stdr.NewWithOptions(stdlog.New(os.Stderr, "", stdlog.LstdFlags), stdr.Options{LogCaller: stdr.None})
 
 	// use AWS_PROFILE=saml env variable to use a different AWS config profile
-	cfg, err := config.LoadDefaultConfig(context.TODO())
+	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		panic(err)
 	}
 
-	logger.Log(context.TODO(), log.LogLevelTrace, "starting consumer", nil)
-	c, err := dejq.NewConsumer(context.TODO(), cfg, "lzap-jobs-dev.fifo", logger, 15, 3)
+	c, err := dejq.NewConsumer(ctx, cfg, "lzap-jobs-dev.fifo", log, 15, 3)
 	if err != nil {
 		panic(err)
 	}
 	c.RegisterHandler("test_job", func(ctx context.Context, job dejq.Job) error {
-		println("Received a job!", job.Type(), job.Attribute("dedup_id"))
+		log.Info("Received a job!", "type", job.Type(), "dedup_id", job.Attribute("dedup_id"))
 		time.Sleep(1 * time.Minute)
 		return nil
 	})
 
-	logger.Log(context.TODO(), log.LogLevelTrace, "starting publisher", nil)
-	p, err := dejq.NewPublisher(context.TODO(), cfg, "lzap-jobs-dev.fifo", logger)
+	p, err := dejq.NewPublisher(ctx, cfg, "lzap-jobs-dev.fifo", log)
 	if err != nil {
 		panic(err)
 	}
 
-	logger.Log(context.TODO(), log.LogLevelTrace, "enqueuing job", nil)
-	err = p.Enqueue(context.TODO(), "test_job", &TestJob{SomeString: "test"})
+	err = p.Enqueue(ctx, "test_job", &TestJob{SomeString: "test"})
 	if err != nil {
 		panic(err)
 	}
 
-	go c.Dequeue(context.TODO())
+	go c.Dequeue(ctx)
 	time.Sleep(40 * time.Second)
 
 	// job sending can be implemented as goroutines, wait until all is sent

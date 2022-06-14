@@ -9,12 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
-	"github.com/lzap/dejq/log"
-	"github.com/lzap/dejq/log/awsadapter"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/go-logr/logr"
 )
 
 const maxRetryCount = 5
@@ -23,7 +21,7 @@ const maxMessages = int64(10)
 var errDataLimit = errors.New("InvalidParameterValue: One or more parameters are invalid. Reason: Message must be shorter than 262144 bytes")
 
 type Publisher interface {
-	Enqueue(ctx context.Context, job_type string, body interface{}) error
+	Enqueue(ctx context.Context, jobType string, body interface{}) error
 }
 
 // Handler provides a standardized handler method, this is the required function composition for event handlers
@@ -64,7 +62,7 @@ type Consumer interface {
 type client struct {
 	sqs      *sqs.Client
 	queueURL string
-	logger   log.Logger
+	logger   logr.Logger
 	senderWG sync.WaitGroup
 
 	handlers     map[string]Handler
@@ -74,7 +72,7 @@ type client struct {
 	maxMessages  int
 }
 
-func NewPublisher(ctx context.Context, config aws.Config, queueName string, logger log.Logger) (*client, error) {
+func NewPublisher(ctx context.Context, config aws.Config, queueName string, logger logr.Logger) (*client, error) {
 	pub := &client{
 		sqs:          sqs.NewFromConfig(config),
 		logger:       logger,
@@ -82,7 +80,7 @@ func NewPublisher(ctx context.Context, config aws.Config, queueName string, logg
 	}
 
 	if config.Logger == nil {
-		config.Logger = awsadapter.NewLogger(logger)
+		config.Logger = NewAWSLogrAdapter(logger)
 	}
 
 	err := pub.getQueueUrl(ctx, queueName)
@@ -93,7 +91,7 @@ func NewPublisher(ctx context.Context, config aws.Config, queueName string, logg
 	return pub, nil
 }
 
-func NewConsumer(ctx context.Context, config aws.Config, queueName string, logger log.Logger, heartbeatSec, maxBeats int) (*client, error) {
+func NewConsumer(ctx context.Context, config aws.Config, queueName string, logger logr.Logger, heartbeatSec, maxBeats int) (*client, error) {
 	client, err := NewPublisher(ctx, config, queueName, logger)
 	if err != nil {
 		return nil, err
@@ -178,23 +176,23 @@ func (c *client) sendDirectMessage(ctx context.Context, input *sqs.SendMessageIn
 	}
 
 	if count > maxRetryCount-1 {
-		c.logger.Log(ctx, log.LogLevelError, "too many failures, giving up", nil)
+		c.logger.Error(nil, "too many failures, giving up")
 		c.senderWG.Done()
 		return
 	}
 
-	if _, err := c.sqs.SendMessage(ctx, input); err != nil {
+	if m, err := c.sqs.SendMessage(ctx, input); err != nil {
 		if err.Error() == errDataLimit.Error() {
-			c.logger.Log(ctx, log.LogLevelError, "payload limit overflow, giving up", nil)
+			c.logger.Error(err, "payload limit overflow, giving up")
 			c.senderWG.Done()
 			return
 		}
 
-		c.logger.Log(ctx, log.LogLevelWarn, "error publishing, trying again in 10 seconds: "+err.Error(), nil)
+		c.logger.Error(err, "error publishing, trying again in 10 seconds")
 		time.Sleep(10 * time.Second)
 		c.sendDirectMessage(ctx, input, count+1)
 	} else {
-		c.logger.Log(ctx, log.LogLevelTrace, "message sent", nil)
+		c.logger.V(1).Info("message sent", "message_id", m.MessageId)
 		c.senderWG.Done()
 	}
 }
@@ -216,6 +214,7 @@ func defaultSQSAttributes(jobType string, extra ...string) map[string]types.Mess
 }
 
 func (c *client) Wait() {
+	c.logger.V(1).Info("waiting until all sending goroutines are done")
 	c.senderWG.Wait()
 }
 
@@ -248,7 +247,7 @@ func (c *client) Dequeue(ctx context.Context) {
 		}
 		output, err := c.sqs.ReceiveMessage(ctx, input)
 		if err != nil {
-			c.logger.Log(ctx, log.LogLevelWarn, "error receiving messages, retrying in 10s: "+err.Error(), nil)
+			c.logger.Error(err, "error receiving messages, retrying in 10s")
 			time.Sleep(10 * time.Second)
 			continue
 		}
@@ -256,11 +255,11 @@ func (c *client) Dequeue(ctx context.Context) {
 		for _, m := range output.Messages {
 			if _, ok := m.MessageAttributes["job_type"]; !ok {
 				//a message will be sent to the DLQ automatically after 4 tries if it is received but not deleted
-				c.logger.Log(ctx, log.LogLevelWarn, "message has no job_type: "+*m.MessageId, nil)
+				c.logger.Error(nil, "error receiving messages, retrying in 10s")
 				continue
 			}
 
-			c.logger.Log(ctx, log.LogLevelTrace, "enqueued: "+*m.MessageId, nil)
+			c.logger.V(2).Info("enqueued", "message_id", *m.MessageId)
 			jobs <- newJob(&m)
 		}
 	}
@@ -269,9 +268,9 @@ func (c *client) Dequeue(ctx context.Context) {
 // worker is an always-on concurrent worker that will take tasks when they are added into the messages buffer
 func (c *client) worker(ctx context.Context, id int, messages <-chan *sqsJob) {
 	for m := range messages {
-		c.logger.Log(ctx, log.LogLevelTrace, "dequeued: "+*m.MessageId+" by XXXX"+string(id), nil)
+		c.logger.V(2).Info("dequeued", "message_id", *m.MessageId, "worker_id", id)
 		if err := c.run(ctx, m); err != nil {
-			c.logger.Log(ctx, log.LogLevelWarn, "error processing message: "+err.Error(), nil)
+			c.logger.Error(err, "error processing message", "message_id", *m.MessageId)
 		}
 	}
 }
@@ -280,7 +279,7 @@ func (c *client) worker(ctx context.Context, id int, messages <-chan *sqsJob) {
 // fully consumed. If the handler exists, it will wait for the err channel to be processed. Once it receives feedback
 // from the handler in the form of a channel, it will either log the error, or consume the message.
 func (c *client) run(ctx context.Context, m *sqsJob) error {
-	c.logger.Log(ctx, log.LogLevelTrace, "processing message: "+*m.MessageId, nil)
+	c.logger.V(2).Info("processing message", "message_id", *m.MessageId)
 	if h, ok := c.handlers[m.Type()]; ok {
 		go c.extend(ctx, m)
 		if err := h(ctx, m); err != nil {
@@ -293,14 +292,14 @@ func (c *client) run(ctx context.Context, m *sqsJob) error {
 
 // delete will remove a message from the queue, this is necessary to fully and successfully consume a message.
 func (c *client) delete(ctx context.Context, m *sqsJob) error {
-	c.logger.Log(ctx, log.LogLevelTrace, "deleting message: "+*m.MessageId, nil)
+	c.logger.V(2).Info("consumed message", "message_id", *m.MessageId)
 	input := &sqs.DeleteMessageInput{
 		QueueUrl:      &c.queueURL,
 		ReceiptHandle: m.ReceiptHandle,
 	}
 	_, err := c.sqs.DeleteMessage(ctx, input)
 	if err != nil {
-		c.logger.Log(ctx, log.LogLevelWarn, "error deleting message: "+err.Error(), nil)
+		c.logger.Error(err, "error consuming message", "message_id", *m.MessageId)
 		return ErrUnableToDelete.Context(err)
 	}
 	return nil
@@ -313,7 +312,7 @@ func (c *client) extend(ctx context.Context, m *sqsJob) {
 	count := 0
 	for {
 		if count >= c.maxBeats {
-			c.logger.Log(ctx, log.LogLevelWarn, "exceeded maximum amount of heartbeats", nil)
+			c.logger.Error(nil, "exceeded maximum amount of heartbeats", "message_id", *m.MessageId)
 			return
 		}
 		count++
@@ -321,11 +320,10 @@ func (c *client) extend(ctx context.Context, m *sqsJob) {
 		select {
 		case <-m.err:
 			// worker is done
-			c.logger.Log(ctx, log.LogLevelTrace, "worker is done: "+*m.MessageId, nil)
 			timer.Stop()
 			return
 		case <-timer.C:
-			c.logger.Log(ctx, log.LogLevelTrace, "extending: "+*m.MessageId, nil)
+			c.logger.V(2).Info("extending message visibility", "message_id", *m.MessageId)
 			input := &sqs.ChangeMessageVisibilityInput{
 				QueueUrl:          &c.queueURL,
 				ReceiptHandle:     m.ReceiptHandle,
@@ -333,7 +331,7 @@ func (c *client) extend(ctx context.Context, m *sqsJob) {
 			}
 			_, err := c.sqs.ChangeMessageVisibility(ctx, input)
 			if err != nil {
-				c.logger.Log(ctx, log.LogLevelError, "unable to extend message visibility: "+err.Error(), nil)
+				c.logger.Error(err, "unable to extend message visibility", "message_id", *m.MessageId)
 				return
 			}
 			timer.Reset(tick)

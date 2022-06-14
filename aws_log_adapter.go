@@ -1,21 +1,20 @@
-package awsadapter
+package dejq
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/aws/smithy-go/logging"
-	"github.com/lzap/dejq/log"
+	"github.com/go-logr/logr"
 )
 
 type awsAdapter struct {
-	log.Logger
+	logr.Logger
 }
 
-func NewLogger(logger log.Logger) *awsAdapter {
+func NewAWSLogrAdapter(logger logr.Logger) *awsAdapter {
 	return &awsAdapter{Logger: logger}
 }
 
 func (a *awsAdapter) Logf(_ logging.Classification, format string, msg ...interface{}) {
-	a.Logger.Log(context.Background(), log.LogLevelDebug, fmt.Sprintf(format, msg), nil)
+	a.Logger.Info(fmt.Sprintf(format, msg))
 }
