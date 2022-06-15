@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	stdlog "log"
+	"math/rand"
 	"os"
 	"time"
 
@@ -16,6 +17,7 @@ type TestJob struct {
 }
 
 func main() {
+	println(rand.Int())
 	ctx := context.Background()
 	stdr.SetVerbosity(9)
 	log := stdr.NewWithOptions(stdlog.New(os.Stderr, "", stdlog.LstdFlags), stdr.Options{LogCaller: stdr.None})
@@ -32,7 +34,7 @@ func main() {
 	}
 	c.RegisterHandler("test_job", func(ctx context.Context, job dejq.Job) error {
 		log.Info("Received a job!", "type", job.Type(), "dedup_id", job.Attribute("dedup_id"))
-		time.Sleep(1 * time.Minute)
+		//time.Sleep(1 * time.Minute)
 		return nil
 	})
 

@@ -16,7 +16,7 @@ import (
 )
 
 const maxRetryCount = 5
-const maxMessages = int64(10)
+const maxMessages = int32(10)
 
 var errDataLimit = errors.New("InvalidParameterValue: One or more parameters are invalid. Reason: Message must be shorter than 262144 bytes")
 
@@ -69,7 +69,6 @@ type client struct {
 	heartbeatSec int
 	maxBeats     int
 	workerPool   int
-	maxMessages  int
 }
 
 func NewPublisher(ctx context.Context, config aws.Config, queueName string, logger logr.Logger) (*client, error) {
@@ -102,7 +101,6 @@ func NewConsumer(ctx context.Context, config aws.Config, queueName string, logge
 	}
 	client.heartbeatSec = heartbeatSec
 	client.maxBeats = maxBeats
-	client.maxMessages = 10
 	client.workerPool = 3
 	client.handlers = make(map[string]Handler)
 	return client, nil
@@ -237,7 +235,6 @@ func (c *client) Dequeue(ctx context.Context) {
 		go c.worker(ctx, w, jobs)
 	}
 
-	maxMessages := int32(c.maxMessages)
 	attributeNames := []string{"All"}
 	for {
 		input := &sqs.ReceiveMessageInput{
@@ -252,7 +249,7 @@ func (c *client) Dequeue(ctx context.Context) {
 			continue
 		}
 
-		for _, m := range output.Messages {
+		for i, m := range output.Messages {
 			if _, ok := m.MessageAttributes["job_type"]; !ok {
 				//a message will be sent to the DLQ automatically after 4 tries if it is received but not deleted
 				c.logger.Error(nil, "error receiving messages, retrying in 10s")
@@ -260,7 +257,8 @@ func (c *client) Dequeue(ctx context.Context) {
 			}
 
 			c.logger.V(2).Info("enqueued", "message_id", *m.MessageId)
-			jobs <- newJob(&m)
+			// pass the original pointer and not the local copy
+			jobs <- newJob(&output.Messages[i])
 		}
 	}
 }
