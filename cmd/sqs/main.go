@@ -18,7 +18,7 @@ type TestJob struct {
 }
 
 func main() {
-	messages := 5
+	messages := 3
 	wg := sync.WaitGroup{}
 	wg.Add(messages)
 	ctx := context.Background()
@@ -37,7 +37,7 @@ func main() {
 	}
 	consumeClient.RegisterHandler("test_job", func(ctx context.Context, job dejq.Job) error {
 		var data TestJob
-		job.Decode(&data)
+		_ = job.Decode(&data)
 		msg := fmt.Sprintf("Received a job: %s", data.SomeString)
 		log.Info(msg, "type", job.Type())
 		wg.Done()
@@ -69,7 +69,8 @@ func main() {
 	// wait until all messages are consumed
 	wg.Wait()
 
-	// stop and wait until all messages are sent (should not happen at this point)
+	// stop publishing goroutines and wait until all messages are sent
 	publishClient.Stop()
+	// stop consuming goroutines and wait until all messages are processed
 	consumeClient.Stop()
 }

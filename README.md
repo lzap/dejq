@@ -3,9 +3,9 @@ Dead Simple Job Queue with grouping
 
 Another task queue with three implementations:
 
-* In-memory (for development or testing)
 * Postgres (via jobqueue library)
 * AWS SQS (FIFO queue)
+* Synchronous (for development or testing)
 
 The goal of this project is to create a simple Go API with the following features:
 
@@ -25,6 +25,11 @@ HOW TO USE
 ----------
 
 See the API [interface](interface.go) and the example in [cmd](cmd) package.
+
+WARNING
+-------
+
+The SQS implementation is not production-ready, it needs more work and unit tests.
 
 AUTHORS
 -------

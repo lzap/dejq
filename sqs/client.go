@@ -34,17 +34,16 @@ type client struct {
 	pollerWG sync.WaitGroup
 	stopFlag atomic.Value
 
-	handlers     map[string]dejq.Handler
-	heartbeatSec int
-	maxBeats     int
-	workerPool   int
+	handlers             map[string]dejq.Handler
+	visibilityTimeoutSec int
+	maxExtensions        int
+	workerPool           int
 }
 
 func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*client, error) {
 	pub := &client{
-		sqs:          sqs.NewFromConfig(config),
-		logger:       logger,
-		heartbeatSec: 30,
+		sqs:    sqs.NewFromConfig(config),
+		logger: logger,
 	}
 
 	if config.Logger == nil {
@@ -59,17 +58,17 @@ func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*
 	return pub, nil
 }
 
-func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, heartbeatSec, maxBeats int) (*client, error) {
+func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, visibilityTimeoutSec, maxExtend int) (*client, error) {
 	client, err := NewPublisher(ctx, config, logger)
 	if err != nil {
 		return nil, dejq.ErrCreateClient.Context(err)
 	}
 	// TODO: VisibilityTimeout can be retrieved from queue dynamically (error thrown when < 10 sec)
-	if heartbeatSec <= 10 {
+	if visibilityTimeoutSec <= 10 {
 		return nil, errors.New("heartbeat cannot be shorter than 10 seconds")
 	}
-	client.heartbeatSec = heartbeatSec
-	client.maxBeats = maxBeats
+	client.visibilityTimeoutSec = visibilityTimeoutSec
+	client.maxExtensions = maxExtend
 	client.workerPool = 3
 	client.handlers = make(map[string]dejq.Handler)
 	client.stopFlag.Store(false)
@@ -297,11 +296,11 @@ func (c *client) delete(ctx context.Context, m *sqsJob) error {
 
 func (c *client) extend(ctx context.Context, m *sqsJob) {
 	// add extra 10 seconds for HTTP REST processing
-	tick := time.Duration(c.heartbeatSec-10) * time.Second
+	tick := time.Duration(c.visibilityTimeoutSec-10) * time.Second
 	timer := time.NewTimer(tick)
 	count := 0
 	for {
-		if count >= c.maxBeats {
+		if count >= c.maxExtensions {
 			c.logger.Error(nil, "exceeded maximum amount of heartbeats", "message_id", *m.MessageId)
 			return
 		}
@@ -318,7 +317,7 @@ func (c *client) extend(ctx context.Context, m *sqsJob) {
 			input := &sqs.ChangeMessageVisibilityInput{
 				QueueUrl:          &c.queueURL,
 				ReceiptHandle:     m.ReceiptHandle,
-				VisibilityTimeout: int32(c.heartbeatSec),
+				VisibilityTimeout: int32(c.visibilityTimeoutSec),
 			}
 			_, err := c.sqs.ChangeMessageVisibility(ctx, input)
 			if err != nil {
