@@ -22,18 +22,22 @@ Multiple jobs can be enqueued as a slice and both Postgres and SQS implementatio
 Every handler has an extra goroutine responsible for updating heartbeat on the background until the handler is finished. This is fully transparent, and it allows long-running tasks up to 12 hours (SQS) or for unlimited time (Postgres).
 
 HOW TO USE
+----------
 
 See the API [interface](interface.go) and the example in [cmd](cmd) package.
 
 AUTHORS
+-------
 
 * Lukas Zapletal (@lzap)
 
 LICENSE
+-------
 
 MIT
 
 CREDITS
+-------
 
 * heavily inspired by gosqs: https://github.com/qhenkart/gosqs (MIT license)
 * Postgres jobqueue is from: https://github.com/osbuild/image-builder (Apache 2.0 license) 

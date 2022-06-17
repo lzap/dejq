@@ -53,7 +53,7 @@ func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*
 
 	err := pub.getQueueUrl(ctx, queueName)
 	if err != nil {
-		return nil, err
+		return nil, dejq.ErrCreateClient.Context(err)
 	}
 
 	return pub, nil
@@ -62,7 +62,7 @@ func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*
 func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, heartbeatSec, maxBeats int) (*client, error) {
 	client, err := NewPublisher(ctx, config, logger)
 	if err != nil {
-		return nil, err
+		return nil, dejq.ErrCreateClient.Context(err)
 	}
 	// TODO: VisibilityTimeout can be retrieved from queue dynamically (error thrown when < 10 sec)
 	if heartbeatSec <= 10 {
@@ -115,7 +115,7 @@ func (c *client) Enqueue(ctx context.Context, jobs ...dejq.PendingJob) error {
 	for _, job := range jobs {
 		bytes, err := json.Marshal(job.Body)
 		if err != nil {
-			return err
+			return dejq.ErrPayloadMarshal.Context(err)
 		}
 
 		deduplicationId := generateRandomString()
