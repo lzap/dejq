@@ -1,4 +1,4 @@
-package dejq
+package sqs
 
 import (
 	"context"
@@ -39,7 +39,7 @@ func (j *sqsJob) attribute(key string) string {
 
 // ErrorResponse is used to determine for error handling within the handler. When an error occurs,
 // this function should be returned.
-func (j *sqsJob) ErrorResponse(ctx context.Context, err error) error {
+func (j *sqsJob) ErrorResponse(_ context.Context, err error) error {
 	go func() {
 		j.errorChannel <- err
 	}()
@@ -48,7 +48,7 @@ func (j *sqsJob) ErrorResponse(ctx context.Context, err error) error {
 
 // Success is used to determine that a handler was successful in processing the job and the job should
 // now be consumed. This will delete the job from the queue
-func (j *sqsJob) Success(ctx context.Context) {
+func (j *sqsJob) Success(_ context.Context) {
 	go func() {
 		j.errorChannel <- nil
 	}()

@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/go-logr/stdr"
 	"github.com/lzap/dejq"
+	"github.com/lzap/dejq/sqs"
 )
 
 type TestJob struct {
@@ -30,7 +31,7 @@ func main() {
 		panic(err)
 	}
 
-	consumeClient, err := dejq.NewConsumer(ctx, cfg, log, 15, 3)
+	consumeClient, err := sqs.NewConsumer(ctx, cfg, log, 15, 3)
 	if err != nil {
 		panic(err)
 	}
@@ -43,7 +44,7 @@ func main() {
 		return nil
 	})
 
-	publishClient, err := dejq.NewPublisher(ctx, cfg, log)
+	publishClient, err := sqs.NewPublisher(ctx, cfg, log)
 	if err != nil {
 		panic(err)
 	}

@@ -27,9 +27,6 @@ type Job interface {
 
 	// Decode must be used to unmarshall body to a particular struct
 	Decode(out interface{}) error
-
-	// Attribute returns an implementation-specific header
-	attribute(key string) string
 }
 
 // Handler provides a standardized handler method, this is the required function composition for event handlers

@@ -1,4 +1,4 @@
-package dejq
+package sqs
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/go-logr/logr"
+	"github.com/lzap/dejq"
 )
 
 const queueName = "lzap-jobs-dev.fifo"
@@ -33,7 +34,7 @@ type client struct {
 	pollerWG sync.WaitGroup
 	stopFlag atomic.Value
 
-	handlers     map[string]Handler
+	handlers     map[string]dejq.Handler
 	heartbeatSec int
 	maxBeats     int
 	workerPool   int
@@ -70,14 +71,14 @@ func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, hea
 	client.heartbeatSec = heartbeatSec
 	client.maxBeats = maxBeats
 	client.workerPool = 3
-	client.handlers = make(map[string]Handler)
+	client.handlers = make(map[string]dejq.Handler)
 	client.stopFlag.Store(false)
 	return client, nil
 }
 
 // RegisterHandler registers an event listener and an associated handler. If the event matches, the handler will
 // be run along with any included middleware
-func (c *client) RegisterHandler(name string, h Handler) {
+func (c *client) RegisterHandler(name string, h dejq.Handler) {
 	c.handlers[name] = h
 }
 
@@ -108,7 +109,7 @@ func generateRandomString() string {
 	return randomBase62(20)[0:22]
 }
 
-func (c *client) Enqueue(ctx context.Context, jobs ...PendingJob) error {
+func (c *client) Enqueue(ctx context.Context, jobs ...dejq.PendingJob) error {
 	var entries = make([]types.SendMessageBatchRequestEntry, 0, len(jobs))
 	groupId := generateRandomString()
 	for _, job := range jobs {
@@ -287,7 +288,7 @@ func (c *client) delete(ctx context.Context, m *sqsJob) error {
 	_, err := c.sqs.DeleteMessage(ctx, input)
 	if err != nil {
 		c.logger.Error(err, "error consuming message", "message_id", *m.MessageId)
-		return ErrUnableToDelete.Context(err)
+		return dejq.ErrUnableToDelete.Context(err)
 	}
 	c.logger.V(2).Info("consumed message", "message_id", *m.MessageId)
 	c.workerWG.Done()
