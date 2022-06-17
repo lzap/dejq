@@ -17,7 +17,15 @@ type Enqueuer interface {
 	// Enqueue sends pending jobs to the queue. Multiple jobs passed in a slice are guaranteed
 	// to be delivered in-order preserving dependencies between jobs. A dependent job can be
 	// dequeued only if all dependencies were already dequeued and confirmed (marked as done).
-	Enqueue(ctx context.Context, job ...PendingJob) error
+	//
+	// Dependant jobs do not share and data, use application database for sharing data across
+	// jobs.
+	//
+	// Example: for jobs {a, b} the "b" only starts after "a" is finished.
+	//
+	// It is not possible to cancel existing job, if job "b" must be skipped for any reason, then
+	// job "a" must set some flag in the application database to skip "b".
+	Enqueue(ctx context.Context, jobs ...PendingJob) error
 }
 
 // Job represents a job task returned from a tasking system.
@@ -29,7 +37,11 @@ type Job interface {
 	Decode(out interface{}) error
 }
 
-// Handler provides a standardized handler method, this is the required function composition for event handlers
+// Handler is called from worker pool when consuming a job. A job is not removed from the queue
+// until the handler returns no error (nil).
+//
+// When an error is returned, job might be scheduled again even multiple times until it is considered as a failure.
+// This behavior is different depending on an implementation.
 type Handler func(context.Context, Job) error
 
 // Dequeuer provides an interface for receiving jobs.

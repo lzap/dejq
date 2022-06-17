@@ -72,6 +72,4 @@ func main() {
 	// stop and wait until all messages are sent (should not happen at this point)
 	publishClient.Stop()
 	consumeClient.Stop()
-
-	//time.Sleep(10 * time.Second)
 }
