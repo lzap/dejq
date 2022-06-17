@@ -21,6 +21,7 @@ import (
 
 const queueName = "lzap-jobs-dev.fifo"
 const maxRetryCount = 5
+const extendExtraSec = 10
 const maxMessages = int32(10)
 
 var errDataLimit = errors.New("InvalidParameterValue: One or more parameters are invalid. Reason: Message must be shorter than 262144 bytes")
@@ -34,10 +35,10 @@ type client struct {
 	pollerWG sync.WaitGroup
 	stopFlag atomic.Value
 
-	handlers             map[string]dejq.Handler
-	visibilityTimeoutSec int
-	maxExtensions        int
-	workerPool           int
+	handlers      map[string]dejq.Handler
+	extendAfter   time.Duration
+	maxExtensions int
+	workerPool    int
 }
 
 func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*client, error) {
@@ -58,17 +59,17 @@ func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*
 	return pub, nil
 }
 
-func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, visibilityTimeoutSec, maxExtend int) (*client, error) {
+// NewConsumer creates a new consumer.
+// IMPORTANT: extendAfter must be shorter than queue visibility timeout. Typically, by few seconds to count with network
+// lag, for example with visibility timeout 30 seconds, extendAfter should be set to 20 seconds.
+func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, extendAfter time.Duration, maxExtends int) (*client, error) {
 	client, err := NewPublisher(ctx, config, logger)
 	if err != nil {
 		return nil, dejq.ErrCreateClient.Context(err)
 	}
-	// TODO: VisibilityTimeout can be retrieved from queue dynamically (error thrown when < 10 sec)
-	if visibilityTimeoutSec <= 10 {
-		return nil, errors.New("heartbeat cannot be shorter than 10 seconds")
-	}
-	client.visibilityTimeoutSec = visibilityTimeoutSec
-	client.maxExtensions = maxExtend
+	// TODO: VisibilityTimeout can be retrieved from queue dynamically and error thrown when extendAfter is too big
+	client.extendAfter = extendAfter
+	client.maxExtensions = maxExtends
 	client.workerPool = 3
 	client.handlers = make(map[string]dejq.Handler)
 	client.stopFlag.Store(false)
@@ -295,9 +296,7 @@ func (c *client) delete(ctx context.Context, m *sqsJob) error {
 }
 
 func (c *client) extend(ctx context.Context, m *sqsJob) {
-	// add extra 10 seconds for HTTP REST processing
-	tick := time.Duration(c.visibilityTimeoutSec-10) * time.Second
-	timer := time.NewTimer(tick)
+	timer := time.NewTimer(c.extendAfter)
 	count := 0
 	for {
 		if count >= c.maxExtensions {
@@ -317,14 +316,14 @@ func (c *client) extend(ctx context.Context, m *sqsJob) {
 			input := &sqs.ChangeMessageVisibilityInput{
 				QueueUrl:          &c.queueURL,
 				ReceiptHandle:     m.ReceiptHandle,
-				VisibilityTimeout: int32(c.visibilityTimeoutSec),
+				VisibilityTimeout: int32(c.extendAfter.Seconds() + extendExtraSec),
 			}
 			_, err := c.sqs.ChangeMessageVisibility(ctx, input)
 			if err != nil {
 				c.logger.Error(err, "unable to extend message visibility", "message_id", *m.MessageId)
 				return
 			}
-			timer.Reset(tick)
+			timer.Reset(c.extendAfter)
 		}
 	}
 }
