@@ -17,7 +17,7 @@ type TestJob struct {
 }
 
 func main() {
-	messages := 2
+	messages := 5
 	wg := sync.WaitGroup{}
 	wg.Add(messages)
 	ctx := context.Background()
@@ -30,7 +30,7 @@ func main() {
 		panic(err)
 	}
 
-	consumeClient, err := dejq.NewConsumer(ctx, cfg, "lzap-jobs-dev.fifo", log, 15, 3)
+	consumeClient, err := dejq.NewConsumer(ctx, cfg, log, 15, 3)
 	if err != nil {
 		panic(err)
 	}
@@ -38,26 +38,32 @@ func main() {
 		var data TestJob
 		job.Decode(&data)
 		msg := fmt.Sprintf("Received a job: %s", data.SomeString)
-		log.Info(msg, "type", job.Type(), "dedup_id", job.Attribute("dedup_id"))
+		log.Info(msg, "type", job.Type())
 		wg.Done()
 		return nil
 	})
 
-	publishClient, err := dejq.NewPublisher(ctx, cfg, "lzap-jobs-dev.fifo", log)
+	publishClient, err := dejq.NewPublisher(ctx, cfg, log)
 	if err != nil {
 		panic(err)
 	}
 
+	jobs := make([]dejq.PendingJob, 0, messages)
 	for i := 1; i <= messages; i++ {
-		log.Info("Sending message", "number", i)
-		err = publishClient.Enqueue(ctx, "test_job", &TestJob{SomeString: fmt.Sprintf("A message number %d", i)})
-		if err != nil {
-			panic(err)
+		j := dejq.PendingJob{
+			Type: "test_job",
+			Body: &TestJob{SomeString: fmt.Sprintf("A message number %d", i)},
 		}
+		jobs = append(jobs, j)
+	}
+	log.Info("Sending messages", "number", messages)
+	err = publishClient.Enqueue(ctx, jobs...)
+	if err != nil {
+		panic(err)
 	}
 
 	// start consuming messages
-	go consumeClient.Dequeue(ctx)
+	go consumeClient.DequeueLoop(ctx)
 
 	// wait until all messages are consumed
 	wg.Wait()

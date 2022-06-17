@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,42 +18,11 @@ import (
 	"github.com/go-logr/logr"
 )
 
+const queueName = "lzap-jobs-dev.fifo"
 const maxRetryCount = 5
 const maxMessages = int32(10)
 
 var errDataLimit = errors.New("InvalidParameterValue: One or more parameters are invalid. Reason: Message must be shorter than 262144 bytes")
-
-type Enqueuer interface {
-	Enqueue(ctx context.Context, jobType string, body interface{}) error
-}
-
-// Handler provides a standardized handler method, this is the required function composition for event handlers
-type Handler func(context.Context, Job) error
-
-// Adapter implements adapters in the context
-type Adapter func(Handler) Handler
-
-// Dequeuer provides an interface for receiving messages through AWS SQS and SNS
-type Dequeuer interface {
-	// DequeueLoop polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
-	//
-	// A message is not considered dequeued until it has been successfully processed and deleted. There is a 30 seconds
-	// delay between receiving a single message and receiving the same message. This delay can be adjusted in the AWS
-	// console and can also be extended during operation. If a message is successfully received 4 times but not deleted,
-	// it will be considered unprocessable and sent to the DLQ automatically
-	//
-	// Consume uses long-polling to check and retrieve messages, if it is unable to make a connection, the aws-SDK will use its
-	// advanced retrying mechanism (including exponential backoff), if all the retries fail, then we will wait 10s before
-	// trying again.
-	//
-	// When a new message is received, it runs in a separate go-routine that will handle the full consuming of the message, error reporting
-	// and deleting
-	DequeueLoop()
-
-	// RegisterHandler registers an event listener and an associated handler. If the event matches, the handler will
-	// be run
-	RegisterHandler(name string, h Handler)
-}
 
 type client struct {
 	sqs      *sqs.Client
@@ -68,7 +39,7 @@ type client struct {
 	workerPool   int
 }
 
-func NewPublisher(ctx context.Context, config aws.Config, queueName string, logger logr.Logger) (*client, error) {
+func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*client, error) {
 	pub := &client{
 		sqs:          sqs.NewFromConfig(config),
 		logger:       logger,
@@ -87,8 +58,8 @@ func NewPublisher(ctx context.Context, config aws.Config, queueName string, logg
 	return pub, nil
 }
 
-func NewConsumer(ctx context.Context, config aws.Config, queueName string, logger logr.Logger, heartbeatSec, maxBeats int) (*client, error) {
-	client, err := NewPublisher(ctx, config, queueName, logger)
+func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, heartbeatSec, maxBeats int) (*client, error) {
+	client, err := NewPublisher(ctx, config, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -133,30 +104,35 @@ func randomBase62(bytes int) string {
 	return n.Text(62)
 }
 
-func generateDeduplicationId() string {
+func generateRandomString() string {
 	return randomBase62(20)[0:22]
 }
 
-func (c *client) Enqueue(ctx context.Context, jobType string, body interface{}, extraAttributes ...string) error {
-	bytes, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
+func (c *client) Enqueue(ctx context.Context, jobs ...PendingJob) error {
+	var entries = make([]types.SendMessageBatchRequestEntry, 0, len(jobs))
+	groupId := generateRandomString()
+	for _, job := range jobs {
+		bytes, err := json.Marshal(job.Body)
+		if err != nil {
+			return err
+		}
 
-	deduplicationId := generateDeduplicationId()
-	attributes := []string{"dedup_id", deduplicationId}
-	if len(extraAttributes) > 0 {
-		attributes = append(attributes, extraAttributes...)
+		deduplicationId := generateRandomString()
+		entries = append(entries, types.SendMessageBatchRequestEntry{
+			Id:                     aws.String(deduplicationId),
+			MessageBody:            aws.String(string(bytes)),
+			MessageAttributes:      defaultSQSAttributes(job.Type, int64(len(jobs))),
+			MessageGroupId:         aws.String(groupId),
+			MessageDeduplicationId: aws.String(deduplicationId),
+		})
 	}
-	sqsInput := &sqs.SendMessageInput{
-		MessageBody:            aws.String(string(bytes)),
-		MessageAttributes:      defaultSQSAttributes(jobType, attributes...),
-		MessageGroupId:         aws.String(jobType),
-		MessageDeduplicationId: aws.String(deduplicationId),
-		QueueUrl:               aws.String(c.queueURL),
+	sqsInput := &sqs.SendMessageBatchInput{
+		Entries:  entries,
+		QueueUrl: aws.String(c.queueURL),
 	}
 
 	c.senderWG.Add(1)
+	// TODO implement confirmed batch sending via worker goroutine just like in CloudWatch
 	go c.sendDirectMessage(ctx, sqsInput)
 	return nil
 }
@@ -165,7 +141,7 @@ func (c *client) Enqueue(ctx context.Context, jobType string, body interface{}, 
 //
 // AWS-SDK will use their own retry mechanism for a failed request utilizing exponential backoff. If they fail
 // then we will wait 10 seconds before trying again.
-func (c *client) sendDirectMessage(ctx context.Context, input *sqs.SendMessageInput, retryCount ...int) {
+func (c *client) sendDirectMessage(ctx context.Context, input *sqs.SendMessageBatchInput, retryCount ...int) {
 	var count int
 	if len(retryCount) != 0 {
 		count = retryCount[0]
@@ -177,7 +153,7 @@ func (c *client) sendDirectMessage(ctx context.Context, input *sqs.SendMessageIn
 		return
 	}
 
-	if m, err := c.sqs.SendMessage(ctx, input); err != nil {
+	if m, err := c.sqs.SendMessageBatch(ctx, input); err != nil {
 		if err.Error() == errDataLimit.Error() {
 			c.logger.Error(err, "payload limit overflow, giving up")
 			c.senderWG.Done()
@@ -188,24 +164,23 @@ func (c *client) sendDirectMessage(ctx context.Context, input *sqs.SendMessageIn
 		time.Sleep(10 * time.Second)
 		c.sendDirectMessage(ctx, input, count+1)
 	} else {
-		c.logger.V(1).Info("message sent", "message_id", m.MessageId)
+		if c.logger.Enabled() {
+			for _, msg := range m.Successful {
+				c.logger.V(1).Info("message successfully sent", "message_id", msg.MessageId)
+			}
+			for _, msg := range m.Failed {
+				err := fmt.Errorf("error %s: %s", *msg.Code, *msg.Message)
+				c.logger.V(1).Error(err, "message send failed")
+			}
+		}
 		c.senderWG.Done()
 	}
 }
 
-func defaultSQSAttributes(jobType string, extra ...string) map[string]types.MessageAttributeValue {
-	result := map[string]types.MessageAttributeValue{
-		"job_type": {DataType: aws.String("String"), StringValue: &jobType},
-	}
-	for i, key := range extra {
-		if i%2 == 0 {
-			value := extra[i+1]
-			result[key] = types.MessageAttributeValue{
-				DataType:    aws.String("String"),
-				StringValue: &value,
-			}
-		}
-	}
+func defaultSQSAttributes(jobType string, inGroup int64) map[string]types.MessageAttributeValue {
+	result := make(map[string]types.MessageAttributeValue, 2)
+	result["job_type"] = types.MessageAttributeValue{DataType: aws.String("String"), StringValue: &jobType}
+	result["in_group"] = types.MessageAttributeValue{DataType: aws.String("String"), StringValue: aws.String(strconv.FormatInt(inGroup, 10))}
 	return result
 }
 
@@ -220,7 +195,7 @@ func (c *client) Stop() {
 	c.workerWG.Wait()
 }
 
-// Dequeue polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
+// DequeueLoop polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
 //
 // A message is not considered dequeued until it has been sucessfully processed and deleted. There is a 30 Second
 // delay between receiving a single message and receiving the same message. This delay can be adjusted in the AWS
@@ -233,7 +208,7 @@ func (c *client) Stop() {
 //
 // When a new message is received, it runs in a separate go-routine that will handle the full consuming of the message, error reporting
 // and deleting
-func (c *client) Dequeue(ctx context.Context) {
+func (c *client) DequeueLoop(ctx context.Context) {
 	jobs := make(chan *sqsJob)
 	for w := 1; w <= c.workerPool; w++ {
 		go c.worker(ctx, w, jobs)
@@ -264,7 +239,7 @@ func (c *client) Dequeue(ctx context.Context) {
 				continue
 			}
 
-			c.logger.V(2).Info("enqueued", "message_id", *m.MessageId, "total_messages", msgNum)
+			c.logger.V(2).Info("enqueued for processing", "message_id", *m.MessageId, "total_messages", msgNum)
 			// pass the original pointer and not the local copy
 			jobs <- newJob(&output.Messages[i])
 		}
@@ -280,9 +255,8 @@ func (c *client) Dequeue(ctx context.Context) {
 // worker is an always-on concurrent worker that will take tasks when they are added into the messages buffer
 func (c *client) worker(ctx context.Context, id int, messages <-chan *sqsJob) {
 	for m := range messages {
-		c.logger.V(2).Info("dequeued", "message_id", *m.MessageId, "worker_id", id)
 		if err := c.run(ctx, m); err != nil {
-			c.logger.Error(err, "error processing message", "message_id", *m.MessageId)
+			c.logger.Error(err, "error processing message", "message_id", *m.MessageId, "worker_id", id)
 		}
 	}
 }

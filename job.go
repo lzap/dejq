@@ -7,12 +7,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
-type Job interface {
-	Type() string
-	Decode(out interface{}) error
-	Attribute(key string) string
-}
-
 type sqsJob struct {
 	*types.Message
 	errorChannel chan error
@@ -27,14 +21,14 @@ func (j *sqsJob) body() []byte {
 }
 
 func (j *sqsJob) Type() string {
-	return j.Attribute("job_type")
+	return j.attribute("job_type")
 }
 
 func (j *sqsJob) Decode(out interface{}) error {
 	return json.Unmarshal(j.body(), &out)
 }
 
-func (j *sqsJob) Attribute(key string) string {
+func (j *sqsJob) attribute(key string) string {
 	id, ok := j.MessageAttributes[key]
 	if !ok {
 		return ""
