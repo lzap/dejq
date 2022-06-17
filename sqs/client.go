@@ -27,13 +27,13 @@ const maxMessages = int32(10)
 var errDataLimit = errors.New("InvalidParameterValue: One or more parameters are invalid. Reason: Message must be shorter than 262144 bytes")
 
 type client struct {
-	sqs      *sqs.Client
-	queueURL string
-	logger   logr.Logger
-	senderWG sync.WaitGroup
-	workerWG sync.WaitGroup
-	pollerWG sync.WaitGroup
-	stopFlag atomic.Value
+	sqs         *sqs.Client
+	queueURL    string
+	logger      logr.Logger
+	waitTimeSec int
+	senderWG    sync.WaitGroup
+	pollerWG    sync.WaitGroup
+	stopFlag    atomic.Value
 
 	handlers      map[string]dejq.Handler
 	extendAfter   time.Duration
@@ -59,10 +59,11 @@ func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*
 	return pub, nil
 }
 
-// NewConsumer creates a new consumer.
+// NewConsumer creates a new consumer client.
+//
 // IMPORTANT: extendAfter must be shorter than queue visibility timeout. Typically, by few seconds to count with network
 // lag, for example with visibility timeout 30 seconds, extendAfter should be set to 20 seconds.
-func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, extendAfter time.Duration, maxExtends int) (*client, error) {
+func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, workers, waitTimeSec int, extendAfter time.Duration, maxExtends int) (*client, error) {
 	client, err := NewPublisher(ctx, config, logger)
 	if err != nil {
 		return nil, dejq.ErrCreateClient.Context(err)
@@ -70,7 +71,8 @@ func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, ext
 	// TODO: VisibilityTimeout can be retrieved from queue dynamically and error thrown when extendAfter is too big
 	client.extendAfter = extendAfter
 	client.maxExtensions = maxExtends
-	client.workerPool = 3
+	client.waitTimeSec = waitTimeSec
+	client.workerPool = workers
 	client.handlers = make(map[string]dejq.Handler)
 	client.stopFlag.Store(false)
 	return client, nil
@@ -193,7 +195,6 @@ func (c *client) Stop() {
 	c.stopFlag.Store(true)
 	c.pollerWG.Wait()
 	c.senderWG.Wait()
-	c.workerWG.Wait()
 }
 
 // DequeueLoop polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
@@ -210,18 +211,21 @@ func (c *client) Stop() {
 // When a new message is received, it runs in a separate go-routine that will handle the full consuming of the message, error reporting
 // and deleting
 func (c *client) DequeueLoop(ctx context.Context) {
-	jobs := make(chan *sqsJob)
+	c.pollerWG.Add(c.workerPool)
 	for w := 1; w <= c.workerPool; w++ {
-		go c.worker(ctx, w, jobs)
+		go c.worker(ctx, w)
 	}
+}
 
-	attributeNames := []string{"All"}
+var attributeNames = []string{"All"}
+
+func (c *client) worker(ctx context.Context, id int) {
 	for {
 		input := &sqs.ReceiveMessageInput{
 			QueueUrl:              &c.queueURL,
 			MaxNumberOfMessages:   maxMessages,
 			MessageAttributeNames: attributeNames,
-			WaitTimeSeconds:       10,
+			WaitTimeSeconds:       int32(c.waitTimeSec),
 		}
 		c.logger.V(3).Info("receive poll", "stopFlag", c.stopFlag.Load().(bool))
 		output, err := c.sqs.ReceiveMessage(ctx, input)
@@ -232,7 +236,6 @@ func (c *client) DequeueLoop(ctx context.Context) {
 		}
 
 		msgNum := len(output.Messages)
-		c.workerWG.Add(msgNum)
 		for i, m := range output.Messages {
 			if _, ok := m.MessageAttributes["job_type"]; !ok {
 				//a message will be sent to the DLQ automatically after 4 tries if it is received but not deleted
@@ -240,24 +243,18 @@ func (c *client) DequeueLoop(ctx context.Context) {
 				continue
 			}
 
-			c.logger.V(2).Info("enqueued for processing", "message_id", *m.MessageId, "total_messages", msgNum)
+			c.logger.V(2).Info("received message", "message_id", *m.MessageId, "total_messages", msgNum)
 			// pass the original pointer and not the local copy
-			jobs <- newJob(&output.Messages[i])
+			job := newJob(&output.Messages[i])
+			if err := c.run(ctx, job); err != nil {
+				c.logger.Error(err, "error processing message", "message_id", *m.MessageId, "worker_id", id)
+			}
 		}
 
 		if c.stopFlag.Load().(bool) {
 			c.logger.V(2).Info("exiting the dequeue loop")
 			c.pollerWG.Done()
 			return
-		}
-	}
-}
-
-// worker is an always-on concurrent worker that will take tasks when they are added into the messages buffer
-func (c *client) worker(ctx context.Context, id int, messages <-chan *sqsJob) {
-	for m := range messages {
-		if err := c.run(ctx, m); err != nil {
-			c.logger.Error(err, "error processing message", "message_id", *m.MessageId, "worker_id", id)
 		}
 	}
 }
@@ -270,7 +267,6 @@ func (c *client) run(ctx context.Context, m *sqsJob) error {
 	if h, ok := c.handlers[m.Type()]; ok {
 		go c.extend(ctx, m)
 		if err := h(ctx, m); err != nil {
-			c.workerWG.Done()
 			return m.ErrorResponse(ctx, err)
 		}
 		m.Success(ctx)
@@ -291,7 +287,6 @@ func (c *client) delete(ctx context.Context, m *sqsJob) error {
 		return dejq.ErrUnableToDelete.Context(err)
 	}
 	c.logger.V(2).Info("consumed message", "message_id", *m.MessageId)
-	c.workerWG.Done()
 	return nil
 }
 

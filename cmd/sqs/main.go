@@ -6,6 +6,7 @@ import (
 	stdlog "log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/go-logr/stdr"
@@ -31,7 +32,7 @@ func main() {
 		panic(err)
 	}
 
-	consumeClient, err := sqs.NewConsumer(ctx, cfg, log, 15, 3)
+	consumeClient, err := sqs.NewConsumer(ctx, cfg, log, 3, 2, 15*time.Second, 3)
 	if err != nil {
 		panic(err)
 	}
