@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	stdlog "log"
-	"math/rand"
 	"os"
-	"time"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/go-logr/stdr"
@@ -17,9 +17,11 @@ type TestJob struct {
 }
 
 func main() {
-	println(rand.Int())
+	messages := 2
+	wg := sync.WaitGroup{}
+	wg.Add(messages)
 	ctx := context.Background()
-	stdr.SetVerbosity(9)
+	stdr.SetVerbosity(3)
 	log := stdr.NewWithOptions(stdlog.New(os.Stderr, "", stdlog.LstdFlags), stdr.Options{LogCaller: stdr.None})
 
 	// use AWS_PROFILE=saml env variable to use a different AWS config profile
@@ -28,29 +30,41 @@ func main() {
 		panic(err)
 	}
 
-	c, err := dejq.NewConsumer(ctx, cfg, "lzap-jobs-dev.fifo", log, 15, 3)
+	consumeClient, err := dejq.NewConsumer(ctx, cfg, "lzap-jobs-dev.fifo", log, 15, 3)
 	if err != nil {
 		panic(err)
 	}
-	c.RegisterHandler("test_job", func(ctx context.Context, job dejq.Job) error {
-		log.Info("Received a job!", "type", job.Type(), "dedup_id", job.Attribute("dedup_id"))
-		//time.Sleep(1 * time.Minute)
+	consumeClient.RegisterHandler("test_job", func(ctx context.Context, job dejq.Job) error {
+		var data TestJob
+		job.Decode(&data)
+		msg := fmt.Sprintf("Received a job: %s", data.SomeString)
+		log.Info(msg, "type", job.Type(), "dedup_id", job.Attribute("dedup_id"))
+		wg.Done()
 		return nil
 	})
 
-	p, err := dejq.NewPublisher(ctx, cfg, "lzap-jobs-dev.fifo", log)
+	publishClient, err := dejq.NewPublisher(ctx, cfg, "lzap-jobs-dev.fifo", log)
 	if err != nil {
 		panic(err)
 	}
 
-	err = p.Enqueue(ctx, "test_job", &TestJob{SomeString: "test"})
-	if err != nil {
-		panic(err)
+	for i := 1; i <= messages; i++ {
+		log.Info("Sending message", "number", i)
+		err = publishClient.Enqueue(ctx, "test_job", &TestJob{SomeString: fmt.Sprintf("A message number %d", i)})
+		if err != nil {
+			panic(err)
+		}
 	}
 
-	go c.Dequeue(ctx)
-	time.Sleep(40 * time.Second)
+	// start consuming messages
+	go consumeClient.Dequeue(ctx)
 
-	// job sending can be implemented as goroutines, wait until all is sent
-	p.Wait()
+	// wait until all messages are consumed
+	wg.Wait()
+
+	// stop and wait until all messages are sent (should not happen at this point)
+	publishClient.Stop()
+	consumeClient.Stop()
+
+	//time.Sleep(10 * time.Second)
 }

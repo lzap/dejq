@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,7 +21,7 @@ const maxMessages = int32(10)
 
 var errDataLimit = errors.New("InvalidParameterValue: One or more parameters are invalid. Reason: Message must be shorter than 262144 bytes")
 
-type Publisher interface {
+type Enqueuer interface {
 	Enqueue(ctx context.Context, jobType string, body interface{}) error
 }
 
@@ -30,9 +31,9 @@ type Handler func(context.Context, Job) error
 // Adapter implements adapters in the context
 type Adapter func(Handler) Handler
 
-// Consumer provides an interface for receiving messages through AWS SQS and SNS
-type Consumer interface {
-	// Consume polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
+// Dequeuer provides an interface for receiving messages through AWS SQS and SNS
+type Dequeuer interface {
+	// DequeueLoop polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
 	//
 	// A message is not considered dequeued until it has been successfully processed and deleted. There is a 30 seconds
 	// delay between receiving a single message and receiving the same message. This delay can be adjusted in the AWS
@@ -45,18 +46,11 @@ type Consumer interface {
 	//
 	// When a new message is received, it runs in a separate go-routine that will handle the full consuming of the message, error reporting
 	// and deleting
-	Consume()
+	DequeueLoop()
 
 	// RegisterHandler registers an event listener and an associated handler. If the event matches, the handler will
 	// be run
 	RegisterHandler(name string, h Handler)
-
-	// Message serves as the direct messaging capability within the consumer. A worker can send direct messages to other workers
-	Message(ctx context.Context, queue, event string, body interface{})
-
-	// MessageSelf serves as the self messaging capability within the consumer, a worker can send messages to itself for continued
-	// processing and resiliency
-	MessageSelf(ctx context.Context, event string, body interface{})
 }
 
 type client struct {
@@ -64,6 +58,9 @@ type client struct {
 	queueURL string
 	logger   logr.Logger
 	senderWG sync.WaitGroup
+	workerWG sync.WaitGroup
+	pollerWG sync.WaitGroup
+	stopFlag atomic.Value
 
 	handlers     map[string]Handler
 	heartbeatSec int
@@ -103,6 +100,7 @@ func NewConsumer(ctx context.Context, config aws.Config, queueName string, logge
 	client.maxBeats = maxBeats
 	client.workerPool = 3
 	client.handlers = make(map[string]Handler)
+	client.stopFlag.Store(false)
 	return client, nil
 }
 
@@ -211,9 +209,15 @@ func defaultSQSAttributes(jobType string, extra ...string) map[string]types.Mess
 	return result
 }
 
-func (c *client) Wait() {
-	c.logger.V(1).Info("waiting until all sending goroutines are done")
+// Stop will block until all background goroutines are done processing. Both message sending
+// and processing is done asynchronously. Call this function before main() function exits to
+// no messages are lost or unprocessed.
+func (c *client) Stop() {
+	c.logger.V(1).Info("waiting for background goroutines")
+	c.stopFlag.Store(true)
+	c.pollerWG.Wait()
 	c.senderWG.Wait()
+	c.workerWG.Wait()
 }
 
 // Dequeue polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
@@ -241,7 +245,9 @@ func (c *client) Dequeue(ctx context.Context) {
 			QueueUrl:              &c.queueURL,
 			MaxNumberOfMessages:   maxMessages,
 			MessageAttributeNames: attributeNames,
+			WaitTimeSeconds:       10,
 		}
+		c.logger.V(3).Info("receive poll", "stopFlag", c.stopFlag.Load().(bool))
 		output, err := c.sqs.ReceiveMessage(ctx, input)
 		if err != nil {
 			c.logger.Error(err, "error receiving messages, retrying in 10s")
@@ -249,6 +255,8 @@ func (c *client) Dequeue(ctx context.Context) {
 			continue
 		}
 
+		msgNum := len(output.Messages)
+		c.workerWG.Add(msgNum)
 		for i, m := range output.Messages {
 			if _, ok := m.MessageAttributes["job_type"]; !ok {
 				//a message will be sent to the DLQ automatically after 4 tries if it is received but not deleted
@@ -256,9 +264,15 @@ func (c *client) Dequeue(ctx context.Context) {
 				continue
 			}
 
-			c.logger.V(2).Info("enqueued", "message_id", *m.MessageId)
+			c.logger.V(2).Info("enqueued", "message_id", *m.MessageId, "total_messages", msgNum)
 			// pass the original pointer and not the local copy
 			jobs <- newJob(&output.Messages[i])
+		}
+
+		if c.stopFlag.Load().(bool) {
+			c.logger.V(2).Info("exiting the dequeue loop")
+			c.pollerWG.Done()
+			return
 		}
 	}
 }
@@ -274,23 +288,24 @@ func (c *client) worker(ctx context.Context, id int, messages <-chan *sqsJob) {
 }
 
 // run should be run within a worker. If there is no handler for that route, then the message will be deleted and
-// fully consumed. If the handler exists, it will wait for the err channel to be processed. Once it receives feedback
+// fully consumed. If the handler exists, it will wait for the errorChannel channel to be processed. Once it receives feedback
 // from the handler in the form of a channel, it will either log the error, or consume the message.
 func (c *client) run(ctx context.Context, m *sqsJob) error {
 	c.logger.V(2).Info("processing message", "message_id", *m.MessageId)
 	if h, ok := c.handlers[m.Type()]; ok {
 		go c.extend(ctx, m)
 		if err := h(ctx, m); err != nil {
+			c.workerWG.Done()
 			return m.ErrorResponse(ctx, err)
 		}
 		m.Success(ctx)
 	}
-	return c.delete(ctx, m) //MESSAGE CONSUMED
+	c.logger.V(2).Info("consuming message", "message_id", *m.MessageId)
+	return c.delete(ctx, m)
 }
 
 // delete will remove a message from the queue, this is necessary to fully and successfully consume a message.
 func (c *client) delete(ctx context.Context, m *sqsJob) error {
-	c.logger.V(2).Info("consumed message", "message_id", *m.MessageId)
 	input := &sqs.DeleteMessageInput{
 		QueueUrl:      &c.queueURL,
 		ReceiptHandle: m.ReceiptHandle,
@@ -300,6 +315,8 @@ func (c *client) delete(ctx context.Context, m *sqsJob) error {
 		c.logger.Error(err, "error consuming message", "message_id", *m.MessageId)
 		return ErrUnableToDelete.Context(err)
 	}
+	c.logger.V(2).Info("consumed message", "message_id", *m.MessageId)
+	c.workerWG.Done()
 	return nil
 }
 
@@ -316,8 +333,9 @@ func (c *client) extend(ctx context.Context, m *sqsJob) {
 		count++
 
 		select {
-		case <-m.err:
+		case <-m.errorChannel:
 			// worker is done
+			c.logger.V(2).Info("heartbeat done", "message_id", *m.MessageId)
 			timer.Stop()
 			return
 		case <-timer.C:

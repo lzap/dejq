@@ -15,7 +15,7 @@ type Job interface {
 
 type sqsJob struct {
 	*types.Message
-	err chan error
+	errorChannel chan error
 }
 
 func newJob(m *types.Message) *sqsJob {
@@ -47,7 +47,7 @@ func (j *sqsJob) Attribute(key string) string {
 // this function should be returned.
 func (j *sqsJob) ErrorResponse(ctx context.Context, err error) error {
 	go func() {
-		j.err <- err
+		j.errorChannel <- err
 	}()
 	return err
 }
@@ -56,6 +56,6 @@ func (j *sqsJob) ErrorResponse(ctx context.Context, err error) error {
 // now be consumed. This will delete the job from the queue
 func (j *sqsJob) Success(ctx context.Context) {
 	go func() {
-		j.err <- nil
+		j.errorChannel <- nil
 	}()
 }

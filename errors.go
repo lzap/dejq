@@ -7,7 +7,7 @@ import (
 // DError defines the error handler for the gosqs package. DError satisfies the error interface and can be
 // used safely with other error handlers
 type DError struct {
-	Err string `json:"err"`
+	Err string `json:"errorChannel"`
 	// contextErr passes the actual error as part of the error message
 	contextErr error
 }
