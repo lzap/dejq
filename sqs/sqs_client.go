@@ -41,8 +41,12 @@ type client struct {
 	workerPool    int
 }
 
-func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*client, error) {
-	pub := &client{
+// NewClient creates a new consumer client.
+//
+// IMPORTANT: extendAfter must be shorter than queue visibility timeout. Typically, by few seconds to count with network
+// lag, for example with visibility timeout 30 seconds, extendAfter should be set to 20 seconds.
+func NewClient(ctx context.Context, config aws.Config, logger logr.Logger, workers, waitTimeSec int, extendAfter time.Duration, maxExtends int) (*client, error) {
+	client := &client{
 		sqs:    sqs.NewFromConfig(config),
 		logger: logger,
 	}
@@ -51,23 +55,11 @@ func NewPublisher(ctx context.Context, config aws.Config, logger logr.Logger) (*
 		config.Logger = NewAWSLogrAdapter(logger)
 	}
 
-	err := pub.getQueueUrl(ctx, queueName)
+	err := client.getQueueUrl(ctx, queueName)
 	if err != nil {
 		return nil, dejq.ErrCreateClient.Context(err)
 	}
 
-	return pub, nil
-}
-
-// NewConsumer creates a new consumer client.
-//
-// IMPORTANT: extendAfter must be shorter than queue visibility timeout. Typically, by few seconds to count with network
-// lag, for example with visibility timeout 30 seconds, extendAfter should be set to 20 seconds.
-func NewConsumer(ctx context.Context, config aws.Config, logger logr.Logger, workers, waitTimeSec int, extendAfter time.Duration, maxExtends int) (*client, error) {
-	client, err := NewPublisher(ctx, config, logger)
-	if err != nil {
-		return nil, dejq.ErrCreateClient.Context(err)
-	}
 	// TODO: VisibilityTimeout can be retrieved from queue dynamically and error thrown when extendAfter is too big
 	client.extendAfter = extendAfter
 	client.maxExtensions = maxExtends

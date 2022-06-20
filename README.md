@@ -21,6 +21,16 @@ Multiple jobs can be enqueued as a slice and both Postgres and SQS implementatio
 
 Every handler has an extra goroutine responsible for updating heartbeat on the background until the handler is finished. This is fully transparent, and it allows long-running tasks up to 12 hours (SQS) or for unlimited time (Postgres).
 
+SQS implementation
+------------------
+
+This implementation is designed for FIFO SQS queues, an attempt to use standard queue will result in an error. Exactly once delivery and first-in first-out capabilities of FIFO queues are needed for the dependencies feature (multiple jobs enqueued in a single operation).
+
+In-Memory implementation
+------------------------
+
+It's a synchronous implementation, meaning this was not meant for production. A single background goroutine is handing the tasks and enqueue operation blocks until the work is done. At this point it should be pretty obvious, but to be sure: do not use this in production!
+
 HOW TO USE
 ----------
 
