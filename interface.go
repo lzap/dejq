@@ -26,6 +26,10 @@ type Enqueuer interface {
 	// It is not possible to cancel existing job, if job "b" must be skipped for any reason, then
 	// job "a" must set some flag in the application database to skip "b".
 	Enqueue(ctx context.Context, jobs ...PendingJob) error
+
+	// Stop let's background workers to finish all jobs and terminates them. It is blocking until all messages
+	// are finished sending or consuming.
+	Stop()
 }
 
 // Job represents a job task returned from a tasking system.

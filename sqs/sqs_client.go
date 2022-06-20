@@ -135,7 +135,8 @@ func (c *client) Enqueue(ctx context.Context, jobs ...dejq.PendingJob) error {
 	}
 
 	c.senderWG.Add(1)
-	// TODO implement confirmed batch sending via worker goroutine just like in CloudWatch
+	// TODO implement confirmed batch sending by up to 10 messages or 1 second delay
+	// see: https://github.com/lzap/cloudwatchwriter2/blob/main/cloudwatch_writer.go
 	go c.sendDirectMessage(ctx, sqsInput)
 	return nil
 }

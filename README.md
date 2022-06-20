@@ -5,7 +5,7 @@ Another task queue with three implementations:
 
 * Postgres (via jobqueue library)
 * AWS SQS (FIFO queue)
-* Synchronous (for development or testing)
+* In-memory (synchronous queue for development or testing)
 
 The goal of this project is to create a simple Go API with the following features:
 
