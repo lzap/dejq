@@ -192,18 +192,20 @@ func (c *client) Stop() {
 
 // DequeueLoop polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it
 //
-// A message is not considered dequeued until it has been sucessfully processed and deleted. There is a 30 Second
+// A message is not considered dequeued until it has been successfully processed and deleted. There is a 30 Second
 // delay between receiving a single message and receiving the same message. This delay can be adjusted in the AWS
 // console and can also be extended during operation. If a message is successfully received 4 times but not deleted,
 // it will be considered unprocessable and sent to the DLQ automatically
 //
 // Dequeue uses long-polling to check and retrieve messages, if it is unable to make a connection, the aws-SDK will use its
-// advanced retrying mechanism (including exponential backoff), if all of the retries fail, then we will wait 10s before
+// advanced retrying mechanism (including exponential backoff), if all the retries fail, then we will wait 10s before
 // trying again.
 //
 // When a new message is received, it runs in a separate go-routine that will handle the full consuming of the message, error reporting
 // and deleting
 func (c *client) DequeueLoop(ctx context.Context) {
+	// TODO: implement context cancellation
+	// ctx, fn := context.WithCancel(ctx)
 	c.pollerWG.Add(c.workerPool)
 	for w := 1; w <= c.workerPool; w++ {
 		go c.worker(ctx, w)

@@ -43,12 +43,13 @@ type Tasks interface {
 	// job "a" must set some flag in the application database to skip "b".
 	Enqueue(ctx context.Context, jobs ...PendingJob) error
 
-	// DequeueLoop polls for new messages and if it finds one it sends the message to a background handler.
-	// When handler exits without error, the message is deleted from the queue.
-	DequeueLoop(ctx context.Context)
-
 	// RegisterHandler registers an event listener for a particular type with an associated handler.
 	RegisterHandler(name string, h Handler)
+
+	// DequeueLoop polls for new messages and if it finds one it sends the message to a background handler.
+	// When handler exits without error, the message is deleted from the queue. All handlers must be
+	// registered via RegisterHandler before the DequeueLoop is called.
+	DequeueLoop(ctx context.Context)
 
 	// Stop let's background workers to finish all jobs and terminates them. It is blocking until all messages
 	// are finished sending or consuming.

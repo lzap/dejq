@@ -44,6 +44,8 @@ func newDejqErr(msg string) *DError {
 
 var ErrCreateClient = newDejqErr("unable to create client")
 
+var ErrEnqueueJob = newDejqErr("unable to enqueue job")
+
 var ErrPayloadMarshal = newDejqErr("unable to marshal payload")
 
 var ErrUnableToDelete = newDejqErr("unable to delete job from queue")

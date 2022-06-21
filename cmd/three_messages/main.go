@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	stdlog "log"
 	"os"
@@ -10,8 +11,11 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/go-logr/stdr"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/stdlib"
 	"github.com/lzap/dejq"
 	"github.com/lzap/dejq/mem"
+	"github.com/lzap/dejq/postgres"
 	"github.com/lzap/dejq/sqs"
 )
 
@@ -39,6 +43,22 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+	} else if os.Args[1] == "pg" {
+		// register and setup logging configuration
+		connConfig, err := pgx.ParseConfig("postgres://nuc:5432/dejq_dev")
+		if err != nil {
+			panic(nil)
+		}
+		connStrRegistered := stdlib.RegisterConnConfig(connConfig)
+
+		db, err := sql.Open("pgx", connStrRegistered)
+		if err != nil {
+			panic(nil)
+		}
+		tasks, err = postgres.NewClient(ctx, log, db, 2, 15*time.Second, 3)
+		if err != nil {
+			panic(err)
+		}
 	} else if os.Args[1] == "mem" {
 		tasks, _ = mem.NewClient(ctx, log)
 	}
@@ -46,7 +66,7 @@ func main() {
 	tasks.RegisterHandler("test_job", func(ctx context.Context, job dejq.Job) error {
 		var data TestJob
 		_ = job.Decode(&data)
-		msg := fmt.Sprintf("Received a job: %s", data.SomeString)
+		msg := fmt.Sprintf("received job: %s", data.SomeString)
 		log.Info(msg, "type", job.Type())
 		wg.Done()
 		return nil
