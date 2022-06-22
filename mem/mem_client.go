@@ -57,6 +57,10 @@ func (c *client) Stop() {
 }
 
 func (c *client) DequeueLoop(ctx context.Context) {
+	go c.dequeueLoop(ctx)
+}
+
+func (c *client) dequeueLoop(ctx context.Context) {
 	for job := range c.todo {
 		c.logger.Info("dequeuing job", "type", job.Type())
 		if h, ok := c.handlers[job.Type()]; ok {

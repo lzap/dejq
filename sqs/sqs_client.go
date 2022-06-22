@@ -186,8 +186,11 @@ func defaultSQSAttributes(jobType string, inGroup int64) map[string]types.Messag
 func (c *client) Stop() {
 	c.logger.V(1).Info("waiting for background goroutines")
 	c.stopFlag.Store(true)
+	c.logger.V(1).Info("waiting until all workers are done")
 	c.pollerWG.Wait()
+	c.logger.V(1).Info("waiting until all senders are done")
 	c.senderWG.Wait()
+	c.logger.V(1).Info("all jobs processed correctly")
 }
 
 // DequeueLoop polls for new messages and if it finds one, decodes it, sends it to the handler and deletes it

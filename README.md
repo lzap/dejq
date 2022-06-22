@@ -21,25 +21,112 @@ Multiple jobs can be enqueued as a slice and both Postgres and SQS implementatio
 
 Every handler has an extra goroutine responsible for updating heartbeat on the background until the handler is finished. This is fully transparent, and it allows long-running tasks up to 12 hours (SQS) or for unlimited time (Postgres).
 
+Logging is done via [logr](https://github.com/go-logr/logr) abstract structured interface, there are adapters for most logging libraries available. This adapter only provides `error` and `info` logging functions with verbosity levels (0 to N). See details blow on how to set verbosity levels.
+
+HOW TO USE
+----------
+
+```go
+package main
+
+import (
+	"context"
+	stdlog "log"
+	"os"
+
+	"github.com/go-logr/stdr"
+	"github.com/lzap/dejq"
+	"github.com/lzap/dejq/mem"
+)
+
+type TestJob struct {
+	SomeString string `json:"str"`
+}
+
+func main() {
+	ctx := context.Background()
+	log := stdr.NewWithOptions(stdlog.New(os.Stderr, "", stdlog.LstdFlags), stdr.Options{LogCaller: stdr.None})
+	
+	// in-memory client (has no options)
+	jobs, _ := mem.NewClient(ctx, log)
+
+	// register handlers
+	jobs.RegisterHandler("test_job", func(ctx context.Context, job dejq.Job) error {
+		var data TestJob
+		job.Decode(&data)
+		// process data
+		return nil
+	})
+
+	// start dequeue loop as separate goroutine(s)
+	jobs.DequeueLoop(ctx)
+
+	// send a job
+	j1 := dejq.PendingJob {
+		Type: "test_job",
+		Body: &TestJob{SomeString: "First job"},
+	}
+	jobs.Enqueue(ctx, j1)
+
+	// send two dependent jobs
+	j2 := dejq.PendingJob {
+		Type: "test_job",
+		Body: &TestJob{SomeString: "Dependant job"},
+	}
+	jobs.Enqueue(ctx, j1, j2)
+	
+	// graceful shutdown
+	jobs.Stop()
+}
+```
+
+See the API [interface](interface.go) and the example in [cmd](cmd) package for more details.
+
+Postgres implementation
+-----------------------
+
+Based on the [jobqueue](https://github.com/osbuild/osbuild-composer/tree/main/pkg/jobqueue) Postgres implementation which takes advantage of some specific features of the database platform, namely `LISTEN/NOTIFY` and `SKIP LOCKED` to eliminate unnecessary polling and locking. Apparently, this implementation needs a connection to a database with few tables created, see migration files in the repository.
+
+Arbitrary amount of goroutines can be configured to perform processing of jobs, the amount depends on the use case but typically should be around number of CPUs (cores) or more depending on I/O heavy workloads. For each job, another goroutine is spawned which updates heartbeat timestamp in configurable interval (until maximum amount of beats is reached). This approach works for short and even very long jobs 
+
+Finished jobs are *left in the database forever*, explicit maintenance must be done regularly. See the package API for functions for database cleanup (delete finished jobs, find dead jobs, vacuum database). There are no command line tools for that, you need to write your own cleanup procedure (cronjob/task). When worker process dies for any reason and some jobs are left unprocessed, heartbeat stops updating. The cleanup procedure is responsible for either removing or requeue unresponsive jobs via `FinishJob` or `RequeueJob`.
+
+Make sure to call `Stop()` in the end of the `main` function in order to let all jobs to finish during graceful shutdown. The implementation immediately cancels all listening workers and waits indefinitely until all already started jobs are finished.
+
+The jobqueue implementation supports additional features (channels, results) which are unused by dejq library because SQS implementation does not support that. The goal of this library is to have a simple and common API.
+
+Client configuration arguments:
+
+* ctx - Go standard library context
+* logger - `logr` facade for logging
+* db - database/sql connection pool for the jobs database (migration must be done separately)
+* workers - amount of workers to spawn (typically number of CPUs/cores or higher)
+* heartbeat - duration of the heartbeat update (depends on the workload and your cleanup procedure)
+* maxBeats - maximum amount of heartbeats until the job is considered stuck and cancelled
+
+Logging verbosity levels:
+
+* 0 - only errors (the default level)
+* 1 - enqueue and dequeue operations with job id, type and body
+* 2 - additional information from worker goroutines
+* 3 - heartbeat information
+
 SQS implementation
 ------------------
 
 This implementation is designed for FIFO SQS queues, an attempt to use standard queue will result in an error. Exactly once delivery and first-in first-out capabilities of FIFO queues are needed for the dependencies feature (multiple jobs enqueued in a single operation).
 
+The SQS implementation is not production-ready, it needs more testing as it was written as a "fallback" implementation if we find the Postgres approach not suitable from the operational perspective.
+
 In-Memory implementation
 ------------------------
 
-It's a synchronous implementation, meaning this was not meant for production. A single background goroutine is handing the tasks and enqueue operation blocks until the work is done. At this point it should be pretty obvious, but to be sure: do not use this in production!
+It's a synchronous implementation where a single background goroutine is handing the tasks and enqueue operation blocks until the work is done. At this point it should be pretty obvious, but to be sure: do not use this in production!
 
-HOW TO USE
-----------
+Planned features
+----------------
 
-See the API [interface](interface.go) and the example in [cmd](cmd) package.
-
-WARNING
--------
-
-The SQS implementation is not production-ready, it needs more work and unit tests.
+* Enqueue later (delayed job)
 
 AUTHORS
 -------
@@ -49,10 +136,10 @@ AUTHORS
 LICENSE
 -------
 
-MIT
+Copyright (c) 2022 Red Hat, licensed under MIT license
 
 CREDITS
 -------
 
-* heavily inspired by gosqs: https://github.com/qhenkart/gosqs (MIT license)
-* Postgres jobqueue is from: https://github.com/osbuild/image-builder (Apache 2.0 license) 
+* Inspired by gosqs: https://github.com/qhenkart/gosqs (MIT license)
+* Postgres jobqueue is from: https://github.com/osbuild/osbuild-composer (Apache 2.0 license) 
