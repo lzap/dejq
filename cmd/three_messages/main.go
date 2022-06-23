@@ -30,7 +30,7 @@ func main() {
 	ctx := context.Background()
 	stdr.SetVerbosity(3)
 	log := stdr.NewWithOptions(stdlog.New(os.Stderr, "", stdlog.LstdFlags), stdr.Options{LogCaller: stdr.None})
-	var jobs dejq.Tasks
+	var jobs dejq.Jobs
 
 	if os.Args[1] == "sqs" {
 		// use AWS_PROFILE=saml env variable to use a different AWS config profile

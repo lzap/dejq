@@ -15,6 +15,8 @@ type PendingJob struct {
 // Handler is called from worker pool when consuming a job. A job is not removed from the queue
 // until the handler returns no error (nil).
 //
+// The context passed via DequeueLoop is available in all handler functions.
+//
 // When an error is returned, job might be scheduled again even multiple times until it is considered as a failure.
 // This behavior is different depending on an implementation.
 type Handler func(context.Context, Job) error
@@ -28,8 +30,8 @@ type Job interface {
 	Decode(out interface{}) error
 }
 
-// Tasks provides an interface for creating new jobs.
-type Tasks interface {
+// Jobs provides an interface for creating new jobs.
+type Jobs interface {
 	// Enqueue sends pending jobs to the queue. Multiple jobs passed in a slice are guaranteed
 	// to be delivered in-order preserving dependencies between jobs. A dependent job can be
 	// dequeued only if all dependencies were already dequeued and confirmed (marked as done).
