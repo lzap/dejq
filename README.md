@@ -1,27 +1,27 @@
-Dead Simple Job Queue with grouping
-===================================
+Dead Simple Job Queue
+=====================
 
-Another task queue with three implementations:
+An abstract task queue API with three implementations:
 
 * Postgres (via jobqueue library)
 * AWS SQS (FIFO queue)
 * In-memory (synchronous queue for development or testing)
 
-The goal of this project is to create a simple Go API with the following features:
+The goal of this project is to create a simple Go API to decouple a SQL-based job queue with the following features:
 
 * Job scheduling.
 * Dependencies.
 * Heartbeat.
 
-To keep things simple, job has a type (string) and a payload (JSON struct).
+To keep things simple, job has a type (string, think of it as a queue name) and a payload (JSON struct, the body). There is no result and no data sharing. If jobs need to share any data, this must be done in a different way (e.g. database).
 
-To receive a job, register a handler function to a type. When the function returns no error, only then the job is removed from the queue. When error is returned, implementations may try to re-deliver the job multiple times until they mark is as invalid (SQS puts the message to the dead-letter queue).
+To receive a job, register a handler function to a type. When the function returns no error, only then the job is removed from the queue. When error is returned, implementations may try to re-deliver the job multiple times until they mark is as invalid (SQS puts the message to the dead-letter queue, Postgres implementation provides a way to find jobs with lost heartbeats via a query).
 
-Multiple jobs can be enqueued as a slice and both Postgres and SQS implementations will ensure in-order processing.
-
-Every handler has an extra goroutine responsible for updating heartbeat on the background until the handler is finished. This is fully transparent, and it allows long-running tasks up to 12 hours (SQS) or for unlimited time (Postgres).
+Multiple jobs can be enqueued in a single Enqueue call all implementations will ensure in-order processing. No other workers are guaranteed to receive jobs with unfinished depednencies.
 
 Logging is done via [logr](https://github.com/go-logr/logr) abstract structured interface, there are adapters for most logging libraries available. This adapter only provides `error` and `info` logging functions with verbosity levels (0 to N). See details blow on how to set verbosity levels.
+
+Make sure to call `Stop()` in the end of the `main` function in order to let all jobs to finish during graceful shutdown. The implementation immediately cancels all listening workers and waits indefinitely until all already started jobs and hearbeat goroutines are finished. Some implementations (SQS) receives jobs in batches, so make sure there is enough shutdown time for workers in order to process all messages in a batch which is 10 jobs by default.
 
 HOW TO USE
 ----------
@@ -91,8 +91,6 @@ Arbitrary amount of goroutines can be configured to perform processing of jobs, 
 
 Finished jobs are *left in the database forever*, explicit maintenance must be done regularly. See the package API for functions for database cleanup (delete finished jobs, find dead jobs, vacuum database). There are no command line tools for that, you need to write your own cleanup procedure (cronjob/task). When worker process dies for any reason and some jobs are left unprocessed, heartbeat stops updating. The cleanup procedure is responsible for either removing or requeue unresponsive jobs via `FinishJob` or `RequeueJob`.
 
-Make sure to call `Stop()` in the end of the `main` function in order to let all jobs to finish during graceful shutdown. The implementation immediately cancels all listening workers and waits indefinitely until all already started jobs are finished.
-
 The jobqueue implementation supports additional features (channels, results) which are unused by dejq library because SQS implementation does not support that. The goal of this library is to have a simple and common API.
 
 Client configuration arguments:
@@ -104,6 +102,8 @@ Client configuration arguments:
 * heartbeat - duration of the heartbeat update (depends on the workload and your cleanup procedure)
 * maxBeats - maximum amount of heartbeats until the job is considered stuck and cancelled
 
+Every function handler is automatically assigned an extra goroutine responsible for updating heartbeat on the background until the handler returns. There is no limit on how long a job can be processed.
+
 Logging verbosity levels:
 
 * 0 - only errors (the default level)
@@ -114,7 +114,11 @@ Logging verbosity levels:
 SQS implementation
 ------------------
 
-This implementation is designed for FIFO SQS queues, an attempt to use standard queue will result in an error. Exactly once delivery and first-in first-out capabilities of FIFO queues are needed for the dependencies feature (multiple jobs enqueued in a single operation).
+This implementation is designed for AWS FIFO SQS queues, an attempt to use standard queue will result in an error. Exactly once delivery and first-in first-out capabilities of FIFO queues are needed for the dependencies feature (multiple jobs enqueued in a single operation).
+
+A fixed amount of worker goroutines is spawned and they all perform long polling of messages in batches of 10 messages, then they dispatch the jobs to handler functions. This implementation ensures the order in batches preserving the dependencies.
+
+Every function handler is automatically assigned an extra goroutine responsible for updating heartbeat (also known as visibility timeout) on the background until the handler returns. There is maximum time of 12 hours for a job which is limitation of the AWS SQS visibility timeout.
 
 The SQS implementation is not production-ready, it needs more testing as it was written as a "fallback" implementation if we find the Postgres approach not suitable from the operational perspective.
 
