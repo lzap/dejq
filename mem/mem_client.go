@@ -2,26 +2,32 @@ package mem
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/go-logr/logr"
 	"github.com/lzap/dejq"
 )
 
 type memJob struct {
-	*dejq.PendingJob
+	TypeData string
+	JSONData []byte
 }
 
-func newJob(job *dejq.PendingJob) *memJob {
-	return &memJob{PendingJob: job}
+func newJob(job *dejq.PendingJob) (*memJob, error) {
+	buffer, err := json.Marshal(job.Body)
+	if err != nil {
+		return nil, err
+	}
+	return &memJob{TypeData: job.Type, JSONData: buffer}, nil
 }
 
 func (j *memJob) Type() string {
-	return j.PendingJob.Type
+	return j.TypeData
 }
 
 func (j *memJob) Decode(out interface{}) error {
-	out = j.PendingJob.Body
-	return nil
+	return json.Unmarshal(j.JSONData, &out)
 }
 
 type client struct {
@@ -44,8 +50,11 @@ func (c *client) RegisterHandler(name string, h dejq.Handler) {
 
 func (c *client) Enqueue(_ context.Context, jobs ...dejq.PendingJob) error {
 	for _, job := range jobs {
-		c.logger.Info("enqueuing job", "type", job.Type)
-		j := newJob(&job)
+		c.logger.Info("enqueuing job", "type", job.Type, "args", fmt.Sprintf("%+v", job.Body))
+		j, err := newJob(&job)
+		if err != nil {
+			c.logger.Error(err, "unable to marshal job data")
+		}
 		c.todo <- j
 	}
 	return nil

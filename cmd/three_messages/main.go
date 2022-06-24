@@ -65,7 +65,10 @@ func main() {
 
 	jobs.RegisterHandler("test_job", func(ctx context.Context, job dejq.Job) error {
 		var data TestJob
-		_ = job.Decode(&data)
+		err := job.Decode(&data)
+		if err != nil {
+			panic(err)
+		}
 		msg := fmt.Sprintf("received job: %s", data.SomeString)
 		log.Info(msg, "type", job.Type())
 		wg.Done()
