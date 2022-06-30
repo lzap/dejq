@@ -1,4 +1,4 @@
-Dead Simple Job Queue
+Very Simple Job Queue
 =====================
 
 An abstract task queue API with three implementations:
@@ -89,7 +89,7 @@ Based on the [jobqueue](https://github.com/osbuild/osbuild-composer/tree/main/pk
 
 Arbitrary amount of goroutines can be configured to perform processing of jobs, the amount depends on the use case but typically should be around number of CPUs (cores) or more depending on I/O heavy workloads. For each job, another goroutine is spawned which updates heartbeat timestamp in configurable interval (until maximum amount of beats is reached). This approach works for short and even very long jobs 
 
-Finished jobs are *left in the database forever*, explicit maintenance must be done regularly. See the package API for functions for database cleanup (delete finished jobs, find dead jobs, vacuum database). There are no command line tools for that, you need to write your own cleanup procedure (cronjob/task). When worker process dies for any reason and some jobs are left unprocessed, heartbeat stops updating. The cleanup procedure is responsible for either removing or requeue unresponsive jobs via `FinishJob` or `RequeueJob`.
+Finished jobs are *left in the database forever*, explicit maintenance must be done regularly. See the package API for functions for database cleanup (delete finished jobs, find cancelled jobs, vacuum database). There are no command line tools for that, you need to write your own cleanup procedure (cronjob/task). When worker process dies for any reason and some jobs are left unprocessed, heartbeat stops updating. The cleanup procedure is responsible for either removing or requeue unresponsive jobs via `FinishJob` or `RequeueJob`.
 
 The jobqueue implementation supports additional features (channels, results) which are unused by dejq library because SQS implementation does not support that. The goal of this library is to have a simple and common API.
 
