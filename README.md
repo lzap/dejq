@@ -125,7 +125,7 @@ The SQS implementation is not production-ready, it needs more testing as it was 
 In-Memory implementation
 ------------------------
 
-It's a synchronous implementation where a single background goroutine is handing the tasks and enqueue operation blocks until the work is done. At this point it should be pretty obvious, but to be sure: do not use this in production!
+It's a synchronous implementation where a single background goroutine is handing the tasks and enqueue operation blocks until the work is done. Also there is not error handling code, when a handler returns an error the library calls `panic` to draw immediate attention. At this point it should be pretty obvious, but to be sure: do not use this in production!
 
 Planned features
 ----------------
