@@ -4,7 +4,8 @@ Very Simple Job Queue
 An abstract task queue API with three implementations:
 
 * Postgres (via jobqueue library)
-* AWS SQS (FIFO queue)
+* AWS SQS (via FIFO queue)
+* Redis (via list, no heartbeat/expiration)
 * In-memory (synchronous queue for development or testing)
 
 The goal of this project is to create a simple Go API to decouple a SQL-based job queue with the following features:
@@ -122,14 +123,41 @@ Every function handler is automatically assigned an extra goroutine responsible 
 
 The SQS implementation is not production-ready, it needs more testing as it was written as a "fallback" implementation if we find the Postgres approach not suitable from the operational perspective.
 
+Redis implementation
+--------------------
+
+Very simple implementation using Redis linked list. Job dependencies are concatenated into list so it is guaranteed that the same worker receives all of them. There is no heartbeat, dead-letter queue or resubmitting of failed jobs. This implementation is meant for temporary solution, to test the interface and upgrade to Postgres or SQS later on.
+
+
 In-Memory implementation
 ------------------------
 
 It's a synchronous implementation where a single background goroutine is handing the tasks and enqueue operation blocks until the work is done. Also there is not error handling code, when a handler returns an error the library calls `panic` to draw immediate attention. At this point it should be pretty obvious, but to be sure: do not use this in production!
 
+Running the example
+-------------------
+
+A small example is provided, to run memory implementation:
+
+        go run cmd/example.main.go mem
+
+Redis implementation:
+
+        REDIS_HOST=localhost go run cmd/example.main.go redis
+
+AWS SQS implementation:
+
+        QUEUE_NAME=dejq.fifo go run cmd/example.main.go sqs
+
+Postgres implementation:
+
+        DB_HOST=localhost DB_NAME=dejq go run cmd/example.main.go pg
+
 Planned features
 ----------------
 
+* Make SQS channel configurable via New function
+* Export statistics for Redis implementation (total number of jobs, messages, duration)
 * Enqueue later (delayed job)
 
 AUTHORS

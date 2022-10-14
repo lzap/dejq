@@ -4,12 +4,12 @@ import "context"
 
 // PendingJob represents a new job. Received jobs use a different interface named Job.
 type PendingJob struct {
-	// Type represents payload type. It is recommended to use _v1 suffix to differentiate
+	// Type represents payload type. It is recommended to use "v1" suffix/prefix to differentiate
 	// incompatible payload versions.
-	Type string
+	Type string `json:"type"`
 
 	// Body must be a struct that can be marshalled to valid JSON.
-	Body interface{}
+	Body interface{} `json:"body"`
 }
 
 // Handler is called from worker pool when consuming a job. A job is not removed from the queue
