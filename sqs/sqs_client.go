@@ -19,7 +19,6 @@ import (
 	"github.com/lzap/dejq"
 )
 
-const queueName = "lzap-jobs-dev.fifo"
 const maxRetryCount = 5
 const extendExtraSec = 10
 const maxMessages = int32(10)
@@ -45,7 +44,7 @@ type client struct {
 //
 // IMPORTANT: extendAfter must be shorter than queue visibility timeout. Typically, by few seconds to count with network
 // lag, for example with visibility timeout 30 seconds, extendAfter should be set to 20 seconds.
-func NewClient(ctx context.Context, config aws.Config, logger logr.Logger, workers, waitTimeSec int, extendAfter time.Duration, maxExtends int) (*client, error) {
+func NewClient(ctx context.Context, config aws.Config, logger logr.Logger, queueName string, workers, waitTimeSec int, extendAfter time.Duration, maxExtends int) (*client, error) {
 	client := &client{
 		sqs:    sqs.NewFromConfig(config),
 		logger: logger,
