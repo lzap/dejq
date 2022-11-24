@@ -16,7 +16,7 @@ The goal of this project is to create a simple Go API to decouple a SQL-based jo
 
 To keep things simple, job has a type (string, think of it as a queue name) and a payload (JSON struct, the body). There is no result and no data sharing. If jobs need to share any data, this must be done in a different way (e.g. database).
 
-To receive a job, register a handler function to a type. When the function returns no error, typically only then the job is removed from the queue but this behavior depends on implementation. Some implementations may try to re-deliver the job multiple times until they mark is as invalid (SQS puts the message to the dead-letter queue, Postgres implementation provides a way to find jobs with lost heartbeats via a query). Check notes below.
+To receive a job, register a handler function to a type. When the function returns no error, implementations may try to redeliver it few times (for example SQS), but generally all dependant jobs will be executed too. This means that the application is responsible for tracking error state and optionally skipping dependant jobs if it needs to.
 
 Multiple jobs can be enqueued in a single Enqueue call all implementations will ensure in-order processing. No other workers are guaranteed to receive jobs with unfinished dependencies.
 
