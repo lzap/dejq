@@ -16,9 +16,9 @@ The goal of this project is to create a simple Go API to decouple a SQL-based jo
 
 To keep things simple, job has a type (string, think of it as a queue name) and a payload (JSON struct, the body). There is no result and no data sharing. If jobs need to share any data, this must be done in a different way (e.g. database).
 
-To receive a job, register a handler function to a type. When the function returns no error, only then the job is removed from the queue. When error is returned, implementations may try to re-deliver the job multiple times until they mark is as invalid (SQS puts the message to the dead-letter queue, Postgres implementation provides a way to find jobs with lost heartbeats via a query).
+To receive a job, register a handler function to a type. When the function returns no error, typically only then the job is removed from the queue but this behavior depends on implementation. Some implementations may try to re-deliver the job multiple times until they mark is as invalid (SQS puts the message to the dead-letter queue, Postgres implementation provides a way to find jobs with lost heartbeats via a query). Check notes below.
 
-Multiple jobs can be enqueued in a single Enqueue call all implementations will ensure in-order processing. No other workers are guaranteed to receive jobs with unfinished depednencies.
+Multiple jobs can be enqueued in a single Enqueue call all implementations will ensure in-order processing. No other workers are guaranteed to receive jobs with unfinished dependencies.
 
 Logging is done via [logr](https://github.com/go-logr/logr) abstract structured interface, there are adapters for most logging libraries available. This adapter only provides `error` and `info` logging functions with verbosity levels (0 to N). See details blow on how to set verbosity levels.
 
@@ -112,6 +112,8 @@ Logging verbosity levels:
 * 2 - additional information from worker goroutines
 * 3 - heartbeat information
 
+*Error handling*: When a handler returns `nil`, job is marked as `failed` and no redelivery is performed. Dependant jobs will not be executed, until the failed job is manually rescheduled.
+
 SQS implementation
 ------------------
 
@@ -123,16 +125,21 @@ Every function handler is automatically assigned an extra goroutine responsible 
 
 The SQS implementation is not production-ready, it needs more testing as it was written as a "fallback" implementation if we find the Postgres approach not suitable from the operational perspective.
 
+*Error handling*: When a handler returns `nil`, job is redelivered multiple times (configurable in SQS) and if it all fails the job is discarded (or put to dead letter queue depends on configuration). Dependant jobs will be executed.
+
 Redis implementation
 --------------------
 
-Very simple implementation using Redis linked list. Job dependencies are concatenated into list so it is guaranteed that the same worker receives all of them. There is no heartbeat, dead-letter queue or resubmitting of failed jobs. This implementation is meant for temporary solution, to test the interface and upgrade to Postgres or SQS later on.
+Very simple implementation using Redis linked list. Job dependencies are concatenated into list, so it is guaranteed that the same worker receives all of them. There is no heartbeat, dead-letter queue or resubmitting of failed jobs. This implementation is meant for temporary solution, to test the interface and upgrade to Postgres or SQS later on.
 
+*Error handling*: When a handler returns `nil`, an error is sent to logger and the job is discarded. Dependant jobs will be executed.
 
 In-Memory implementation
 ------------------------
 
 It's a synchronous implementation where a single background goroutine is handing the tasks and enqueue operation blocks until the work is done. Also there is not error handling code, when a handler returns an error the library calls `panic` to draw immediate attention. At this point it should be pretty obvious, but to be sure: do not use this in production!
+
+*Error handling*: When a handler returns `nil`, the program panics. The reason is to bring attention as the in-memory implementation is meant for development.
 
 Running the example
 -------------------
