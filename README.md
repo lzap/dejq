@@ -112,7 +112,7 @@ Logging verbosity levels:
 * 2 - additional information from worker goroutines
 * 3 - heartbeat information
 
-*Error handling*: When a handler returns `nil`, job is marked as `failed` and no redelivery is performed. Dependant jobs will not be executed, until the failed job is manually rescheduled.
+*Error handling*: When a handler returns `nil`, job is marked as `failed` and no redelivery is performed. Dependant jobs will be executed. Manual redelivery of failed jobs is possible.
 
 SQS implementation
 ------------------
