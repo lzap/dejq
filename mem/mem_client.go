@@ -30,25 +30,25 @@ func (j *memJob) Decode(out interface{}) error {
 	return json.Unmarshal(j.JSONData, &out)
 }
 
-type client struct {
+type Client struct {
 	logger   logr.Logger
 	handlers map[string]dejq.Handler
 	todo     chan dejq.Job
 }
 
-func NewClient(_ context.Context, logger logr.Logger) (*client, error) {
-	return &client{
+func NewClient(_ context.Context, logger logr.Logger) (*Client, error) {
+	return &Client{
 		logger:   logger,
 		handlers: make(map[string]dejq.Handler),
 		todo:     make(chan dejq.Job),
 	}, nil
 }
 
-func (c *client) RegisterHandler(name string, h dejq.Handler) {
+func (c *Client) RegisterHandler(name string, h dejq.Handler) {
 	c.handlers[name] = h
 }
 
-func (c *client) Enqueue(_ context.Context, jobs ...dejq.PendingJob) error {
+func (c *Client) Enqueue(_ context.Context, jobs ...dejq.PendingJob) error {
 	for _, job := range jobs {
 		c.logger.Info("enqueuing job", "type", job.Type, "args", fmt.Sprintf("%+v", job.Body))
 		j, err := newJob(&job)
@@ -60,16 +60,16 @@ func (c *client) Enqueue(_ context.Context, jobs ...dejq.PendingJob) error {
 	return nil
 }
 
-func (c *client) Stop() {
+func (c *Client) Stop() {
 	c.logger.Info("sending stop signal")
 	close(c.todo)
 }
 
-func (c *client) DequeueLoop(ctx context.Context) {
+func (c *Client) DequeueLoop(ctx context.Context) {
 	go c.dequeueLoop(ctx)
 }
 
-func (c *client) dequeueLoop(ctx context.Context) {
+func (c *Client) dequeueLoop(ctx context.Context) {
 	for job := range c.todo {
 		c.logger.Info("dequeuing job", "type", job.Type())
 		if h, ok := c.handlers[job.Type()]; ok {
