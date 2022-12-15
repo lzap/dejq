@@ -139,7 +139,7 @@ In-Memory implementation
 
 It's a synchronous implementation where a single background goroutine is handing the tasks and enqueue operation blocks until the work is done. Also there is not error handling code, when a handler returns an error the library calls `panic` to draw immediate attention. At this point it should be pretty obvious, but to be sure: do not use this in production!
 
-*Error handling*: When a handler returns `nil`, the program panics. The reason is to bring attention as the in-memory implementation is meant for development.
+*Error handling*: When a handler returns `nil`, an error is sent to the logger and the job is discarded. Dependant jobs will be executed.
 
 Running the example
 -------------------

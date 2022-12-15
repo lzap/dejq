@@ -74,9 +74,10 @@ func (c *client) dequeueLoop(ctx context.Context) {
 		c.logger.Info("dequeuing job", "type", job.Type())
 		if h, ok := c.handlers[job.Type()]; ok {
 			if err := h(ctx, job); err != nil {
-				c.logger.Error(err, "job handler returned an error, memory queue panics now")
-				panic(err)
+				c.logger.Error(err, "job handler returned an error", "error", err.Error())
 			}
+		} else {
+			c.logger.Error(nil, "handler not found", "type", job.Type())
 		}
 	}
 }
