@@ -99,11 +99,14 @@ func main() {
 		}
 		pendingJobs = append(pendingJobs, j)
 	}
-	log.Info("Sending messages", "number", messages)
+	log.Info("sending messages", "number", messages)
 	err = jobs.Enqueue(ctx, pendingJobs...)
 	if err != nil {
 		panic(err)
 	}
+
+	stats, err := jobs.Stats(ctx)
+	log.Info("stats", "stats", stats)
 
 	// wait until all messages are consumed
 	wg.Wait()

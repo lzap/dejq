@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -57,6 +58,7 @@ func NewClient(_ context.Context, logger logr.Logger, address, username, passwor
 		handlers:  make(map[string]dejq.Handler),
 		client:    rdb,
 		queueName: queueName,
+		closeCh:   make(chan interface{}),
 	}, nil
 }
 
@@ -147,4 +149,15 @@ func (c *client) processJobs(ctx context.Context, jobs []*job) {
 			}
 		}
 	}
+}
+
+func (c *client) Stats(ctx context.Context) (dejq.Stats, error) {
+	count, err := c.client.LLen(ctx, c.queueName).Result()
+	if err != nil {
+		return dejq.Stats{}, fmt.Errorf("unable to get queue len: %w", err)
+	}
+
+	return dejq.Stats{
+		EnqueuedJobs: uint64(count),
+	}, nil
 }

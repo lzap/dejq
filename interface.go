@@ -56,4 +56,12 @@ type Jobs interface {
 	// Stop let's background workers to finish all jobs and terminates them. It is blocking until all messages
 	// are finished sending or consuming.
 	Stop()
+
+	// Stats returns statistics. Not all implementations supports stats, some may return zero values.
+	Stats(ctx context.Context) (Stats, error)
+}
+
+// Stats provides monitoring statistics.
+type Stats struct {
+	EnqueuedJobs uint64
 }

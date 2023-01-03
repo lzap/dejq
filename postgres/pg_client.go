@@ -214,3 +214,7 @@ func (c *client) extend(ctx context.Context, job *dbJob) {
 		}
 	}
 }
+
+func (c *client) Stats(ctx context.Context) (dejq.Stats, error) {
+	return dejq.Stats{}, nil
+}

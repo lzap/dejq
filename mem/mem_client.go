@@ -81,3 +81,7 @@ func (c *Client) dequeueLoop(ctx context.Context) {
 		}
 	}
 }
+
+func (c *Client) Stats(ctx context.Context) (dejq.Stats, error) {
+	return dejq.Stats{}, nil
+}
