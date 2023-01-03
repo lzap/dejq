@@ -8,6 +8,8 @@ An abstract task queue API with three implementations:
 * Redis (via list, no heartbeat/expiration)
 * In-memory (synchronous queue for development or testing)
 
+_Pronounced: "dejk"_
+
 The goal of this project is to create a simple Go API to decouple a SQL-based job queue with the following features:
 
 * Job scheduling.

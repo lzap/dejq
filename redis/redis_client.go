@@ -3,7 +3,9 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/go-redis/redis/v8"
@@ -35,15 +37,15 @@ func (j *job) Decode(out interface{}) error {
 }
 
 type client struct {
-	logger     logr.Logger
-	handlers   map[string]dejq.Handler
-	client     *redis.Client
-	listName   string
-	subscriber *redis.PubSub
-	workerWG   sync.WaitGroup
+	logger    logr.Logger
+	handlers  map[string]dejq.Handler
+	client    *redis.Client
+	queueName string
+	workerWG  sync.WaitGroup
+	closeCh   chan interface{}
 }
 
-func NewClient(_ context.Context, logger logr.Logger, address, username, password string, db int, listName string) (*client, error) {
+func NewClient(_ context.Context, logger logr.Logger, address, username, password string, db int, queueName string) (*client, error) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     address,
 		Username: username,
@@ -51,10 +53,10 @@ func NewClient(_ context.Context, logger logr.Logger, address, username, passwor
 		DB:       db,
 	})
 	return &client{
-		logger:   logger,
-		handlers: make(map[string]dejq.Handler),
-		client:   rdb,
-		listName: listName,
+		logger:    logger,
+		handlers:  make(map[string]dejq.Handler),
+		client:    rdb,
+		queueName: queueName,
 	}, nil
 }
 
@@ -86,9 +88,9 @@ func (c *client) Enqueue(ctx context.Context, jobs ...dejq.PendingJob) error {
 		return err
 	}
 
-	cmd := c.client.Publish(ctx, c.listName, buffer)
+	cmd := c.client.LPush(ctx, c.queueName, buffer)
 	if cmd.Err() != nil {
-		c.logger.Error(cmd.Err(), "unable to publish job", "payload", string(buffer))
+		c.logger.Error(cmd.Err(), "unable to push job", "payload", string(buffer))
 		return cmd.Err()
 	}
 
@@ -97,27 +99,39 @@ func (c *client) Enqueue(ctx context.Context, jobs ...dejq.PendingJob) error {
 }
 
 func (c *client) Stop() {
-	c.logger.Info("closing Redis subscriber and waiting for all workers to finish")
-	err := c.subscriber.Close()
-	if err != nil {
-		c.logger.Error(err, "unable to close subscriber")
-	}
+	close(c.closeCh)
+	c.logger.Info("waiting for all workers to finish")
 	c.workerWG.Wait()
 }
 
 func (c *client) DequeueLoop(ctx context.Context) {
-	c.subscriber = c.client.Subscribe(ctx, c.listName)
 	go c.dequeueLoop(ctx)
 }
 
 func (c *client) dequeueLoop(ctx context.Context) {
-	for msg := range c.subscriber.Channel() {
-		jobs := make([]*job, 1)
-		err := json.Unmarshal([]byte(msg.Payload), &jobs)
-		if err != nil {
-			c.logger.Error(err, "unable to unmarshal payload, skipping", "payload", msg.Payload)
+	for {
+		select {
+		case <-c.closeCh:
+			c.logger.Info("shutting down consumer (stop)...")
+			return
+		case <-ctx.Done():
+			c.logger.Info("shutting down consumer (cancel)...")
+			return
+		default:
+			res, err := c.client.BLPop(ctx, 10*time.Second, c.queueName).Result()
+			if err != nil && err.Error() != "redis: nil" {
+				c.logger.Error(err, "error consuming from redis queue")
+			} else if errors.Is(err, redis.Nil) {
+				// no tasks to consume (time out)
+			} else {
+				jobs := make([]*job, 1)
+				err = json.Unmarshal([]byte(res[1]), &jobs)
+				if err != nil {
+					c.logger.Error(err, "unable to unmarshal payload, skipping", "payload", res[1])
+				}
+				go c.processJobs(ctx, jobs)
+			}
 		}
-		go c.processJobs(ctx, jobs)
 	}
 }
 
