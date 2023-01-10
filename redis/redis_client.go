@@ -172,6 +172,8 @@ func (c *client) dequeueLoop(ctx context.Context) {
 	}
 }
 
+var HandlerNotFoundErr = errors.New("handler not registered")
+
 func (c *client) processJobs(ctx context.Context, jobs []*job, timeouts int) {
 	c.workerWG.Add(1)
 	defer c.workerWG.Done()
@@ -182,6 +184,9 @@ func (c *client) processJobs(ctx context.Context, jobs []*job, timeouts int) {
 			if err := h(ctx, job); err != nil {
 				c.logger.Error(err, "job handler returned an error")
 			}
+		} else {
+			// handler not found
+			c.logger.Error(HandlerNotFoundErr, "cannot dispatch job")
 		}
 	}
 }
