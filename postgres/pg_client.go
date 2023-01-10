@@ -36,6 +36,10 @@ func (j *dbJob) Type() string {
 	return j.JobType
 }
 
+func (j *dbJob) Id() string {
+	return j.ID.String()
+}
+
 func (j *dbJob) Decode(out interface{}) error {
 	return json.Unmarshal(j.Args, &out)
 }
@@ -89,20 +93,22 @@ func (c *client) RegisterHandler(name string, h dejq.Handler) {
 	c.handlers[name] = h
 }
 
-func (c *client) Enqueue(_ context.Context, jobs ...dejq.PendingJob) error {
+func (c *client) Enqueue(_ context.Context, jobs ...dejq.PendingJob) ([]string, error) {
+	ids := make([]string, len(jobs))
 	deps := make([]uuid.UUID, 0, len(jobs))
-	for _, job := range jobs {
+	for i, job := range jobs {
 		dbJob, err := c.jq.Enqueue(job.Type, job.Body, deps, "")
 		if err != nil {
-			return dejq.ErrEnqueueJob.Context(err)
+			return ids, dejq.ErrEnqueueJob.Context(err)
 		}
+		ids[i] = dbJob.String()
 		c.logger.V(1).Info("dequeued job",
 			"type", job.Type,
-			"uuid", dbJob.String(),
+			"uuid", ids[i],
 			"args", fmt.Sprintf("%+v", job.Body))
 		deps = append(deps, dbJob)
 	}
-	return nil
+	return ids, nil
 }
 
 func (c *client) Stop() {

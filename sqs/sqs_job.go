@@ -24,6 +24,10 @@ func (j *sqsJob) Type() string {
 	return j.attribute("job_type")
 }
 
+func (j *sqsJob) Id() string {
+	return j.Id()
+}
+
 func (j *sqsJob) Decode(out interface{}) error {
 	return json.Unmarshal(j.body(), &out)
 }

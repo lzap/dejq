@@ -28,6 +28,9 @@ type Job interface {
 
 	// Decode must be used to unmarshall body to a particular struct
 	Decode(out interface{}) error
+
+	// Id returns some kind of unique id (UUID typically)
+	Id() string
 }
 
 // Jobs provides an interface for creating new jobs.
@@ -39,11 +42,13 @@ type Jobs interface {
 	// Dependant jobs do not share and data, use application database for sharing data across
 	// jobs.
 	//
+	// Returns a unique strings, typically UUIDs, of enqueued jobs.
+	//
 	// Example: for jobs {a, b} the "b" only starts after "a" is finished.
 	//
 	// It is not possible to cancel existing job, if job "b" must be skipped for any reason, then
 	// job "a" must set some flag in the application database to skip "b".
-	Enqueue(ctx context.Context, jobs ...PendingJob) error
+	Enqueue(ctx context.Context, jobs ...PendingJob) ([]string, error)
 
 	// RegisterHandler registers an event listener for a particular type with an associated handler.
 	RegisterHandler(name string, h Handler)

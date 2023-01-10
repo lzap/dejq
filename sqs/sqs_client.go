@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
 	"github.com/lzap/dejq"
 )
 
@@ -102,23 +103,26 @@ func generateRandomString() string {
 	return randomBase62(20)[0:22]
 }
 
-func (c *client) Enqueue(ctx context.Context, jobs ...dejq.PendingJob) error {
+func (c *client) Enqueue(ctx context.Context, jobs ...dejq.PendingJob) ([]string, error) {
+	ids := make([]string, len(jobs))
 	var entries = make([]types.SendMessageBatchRequestEntry, 0, len(jobs))
 	groupId := generateRandomString()
-	for _, job := range jobs {
+	for i, job := range jobs {
 		bytes, err := json.Marshal(job.Body)
 		if err != nil {
-			return dejq.ErrPayloadMarshal.Context(err)
+			return ids, dejq.ErrPayloadMarshal.Context(err)
 		}
 
 		deduplicationId := generateRandomString()
+		job_id := uuid.NewString()
 		entries = append(entries, types.SendMessageBatchRequestEntry{
 			Id:                     aws.String(deduplicationId),
 			MessageBody:            aws.String(string(bytes)),
-			MessageAttributes:      defaultSQSAttributes(job.Type, int64(len(jobs))),
+			MessageAttributes:      defaultSQSAttributes(job.Type, int64(len(jobs)), job_id),
 			MessageGroupId:         aws.String(groupId),
 			MessageDeduplicationId: aws.String(deduplicationId),
 		})
+		ids[i] = job_id
 	}
 	sqsInput := &sqs.SendMessageBatchInput{
 		Entries:  entries,
@@ -129,7 +133,7 @@ func (c *client) Enqueue(ctx context.Context, jobs ...dejq.PendingJob) error {
 	// TODO implement confirmed batch sending by up to 10 messages or 1 second delay
 	// see: https://github.com/lzap/cloudwatchwriter2/blob/main/cloudwatch_writer.go
 	go c.sendDirectMessage(ctx, sqsInput)
-	return nil
+	return ids, nil
 }
 
 // sendDirectMessage is used to handle sending and error failures in a separate go-routine.
@@ -172,8 +176,9 @@ func (c *client) sendDirectMessage(ctx context.Context, input *sqs.SendMessageBa
 	}
 }
 
-func defaultSQSAttributes(jobType string, inGroup int64) map[string]types.MessageAttributeValue {
-	result := make(map[string]types.MessageAttributeValue, 2)
+func defaultSQSAttributes(jobType string, inGroup int64, id string) map[string]types.MessageAttributeValue {
+	result := make(map[string]types.MessageAttributeValue, 3)
+	result["job_id"] = types.MessageAttributeValue{DataType: aws.String("String"), StringValue: &id}
 	result["job_type"] = types.MessageAttributeValue{DataType: aws.String("String"), StringValue: &jobType}
 	result["in_group"] = types.MessageAttributeValue{DataType: aws.String("String"), StringValue: aws.String(strconv.FormatInt(inGroup, 10))}
 	return result

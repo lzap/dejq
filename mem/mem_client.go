@@ -6,10 +6,12 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
+	"github.com/google/uuid"
 	"github.com/lzap/dejq"
 )
 
 type memJob struct {
+	UUID     string
 	TypeData string
 	JSONData []byte
 }
@@ -19,7 +21,11 @@ func newJob(job *dejq.PendingJob) (*memJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &memJob{TypeData: job.Type, JSONData: buffer}, nil
+	return &memJob{UUID: uuid.NewString(), TypeData: job.Type, JSONData: buffer}, nil
+}
+
+func (j *memJob) Id() string {
+	return j.UUID
 }
 
 func (j *memJob) Type() string {
@@ -48,16 +54,18 @@ func (c *Client) RegisterHandler(name string, h dejq.Handler) {
 	c.handlers[name] = h
 }
 
-func (c *Client) Enqueue(_ context.Context, jobs ...dejq.PendingJob) error {
-	for _, job := range jobs {
-		c.logger.Info("enqueuing job", "type", job.Type, "args", fmt.Sprintf("%+v", job.Body))
+func (c *Client) Enqueue(_ context.Context, jobs ...dejq.PendingJob) ([]string, error) {
+	ids := make([]string, len(jobs))
+	for i, job := range jobs {
 		j, err := newJob(&job)
 		if err != nil {
 			c.logger.Error(err, "unable to marshal job data")
 		}
+		c.logger.Info("enqueuing job", "type", job.Type, "args", fmt.Sprintf("%+v", job.Body), "job_id", j.UUID)
+		ids[i] = j.UUID
 		c.todo <- j
 	}
-	return nil
+	return ids, nil
 }
 
 func (c *Client) Stop() {
@@ -71,7 +79,7 @@ func (c *Client) DequeueLoop(ctx context.Context) {
 
 func (c *Client) dequeueLoop(ctx context.Context) {
 	for job := range c.todo {
-		c.logger.Info("dequeuing job", "type", job.Type())
+		c.logger.Info("dequeued job", "type", job.Type(), "job_id", job.Id())
 		if h, ok := c.handlers[job.Type()]; ok {
 			if err := h(ctx, job); err != nil {
 				c.logger.Error(err, "job handler returned an error", "error", err.Error())

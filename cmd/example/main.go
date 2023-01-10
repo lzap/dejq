@@ -63,7 +63,7 @@ func main() {
 		}
 	} else if os.Args[1] == "redis" {
 		address := fmt.Sprintf("%s:6379", os.Getenv("REDIS_HOST"))
-		jobs, _ = redis.NewClient(ctx, log, address, "", "", 0, "dejq_dev")
+		jobs, _ = redis.NewClient(ctx, log, address, "", "", 0, "dejq_dev", 1*time.Second)
 	} else if os.Args[1] == "mem" {
 		jobs, _ = mem.NewClient(ctx, log)
 	}
@@ -88,7 +88,7 @@ func main() {
 		Type: "test_job",
 		Body: &TestJob{SomeString: "A first message"},
 	}
-	err := jobs.Enqueue(ctx, j)
+	_, err := jobs.Enqueue(ctx, j)
 
 	// send three dependant messages
 	pendingJobs := make([]dejq.PendingJob, 0, messages)
@@ -100,7 +100,7 @@ func main() {
 		pendingJobs = append(pendingJobs, j)
 	}
 	log.Info("sending messages", "number", messages)
-	err = jobs.Enqueue(ctx, pendingJobs...)
+	_, err = jobs.Enqueue(ctx, pendingJobs...)
 	if err != nil {
 		panic(err)
 	}
