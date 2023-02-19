@@ -1,6 +1,8 @@
 Very Simple Job Queue
 =====================
 
+THIS REPOSITORY IS IN MAINTAINANCE MODE. EXPECT NO UPDATES.
+
 An abstract task queue API with three implementations:
 
 * Postgres (via jobqueue library)
